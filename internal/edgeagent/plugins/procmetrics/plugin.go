@@ -7,6 +7,14 @@
 //	listen_address : string  (default ":9256")
 //	procfs          : string  (optional, defaults to process-exporter's /proc)
 //	process_names  : []map   (process-exporter match config; default = group-by-comm catch-all)
+//	gather_smaps   : bool    (default false; reads /proc/<pid>/smaps for PSS / swap)
+//	threads        : bool    (default false; per-thread metrics)
+//
+// gather_smaps and threads are always passed explicitly. process-exporter
+// defaults both to true, and reading smaps for every tracked process can take
+// longer than the metrics pipeline's scrape timeout or block on processes in
+// D state. Nothing in ongrid consumes the thread or proportional memory
+// series, so they stay off unless an operator opts in.
 //
 // process_names is passed through verbatim to the rendered YAML so the
 // manager UI can offer either the catch-all default or operator-tuned
@@ -18,6 +26,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"text/template"
 
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
@@ -98,6 +107,8 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 func buildArgs(cfg plugins.PluginConfig, configFile string) []string {
 	listen := DefaultListenAddress
 	procfs := ""
+	gatherSmaps := false
+	threads := false
 	if cfg.Spec != nil {
 		if v, ok := cfg.Spec["listen_address"].(string); ok && v != "" {
 			listen = v
@@ -105,10 +116,18 @@ func buildArgs(cfg plugins.PluginConfig, configFile string) []string {
 		if v, ok := cfg.Spec["procfs"].(string); ok && v != "" {
 			procfs = v
 		}
+		if v, ok := cfg.Spec["gather_smaps"].(bool); ok {
+			gatherSmaps = v
+		}
+		if v, ok := cfg.Spec["threads"].(bool); ok {
+			threads = v
+		}
 	}
 	args := []string{
 		"-web.listen-address=" + listen,
 		"-config.path=" + configFile,
+		"-gather-smaps=" + strconv.FormatBool(gatherSmaps),
+		"-threads=" + strconv.FormatBool(threads),
 	}
 	if procfs != "" {
 		args = append(args, "-procfs="+procfs)
