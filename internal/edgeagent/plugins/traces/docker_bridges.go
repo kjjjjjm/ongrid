@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 )
 
@@ -111,7 +112,7 @@ func dockerBridgeEndpoints(cfg plugins.PluginConfig) []string {
 	blocked, _ := cfg.Spec[dockerBridgeBlockedKey].([]string)
 	var endpoints []string
 	for _, address := range addresses {
-		for _, protocol := range [][2]string{{"grpc_endpoint", "4317"}, {"http_endpoint", "4318"}} {
+		for _, protocol := range [][2]string{{"grpc_endpoint", edgeconfig.ListenerTracesGRPC.Port()}, {"http_endpoint", edgeconfig.ListenerTracesHTTP.Port()}} {
 			endpoint := net.JoinHostPort(address, protocol[1])
 			if stringOr(cfg.Spec, protocol[0], "") == "" && !slices.Contains(blocked, endpoint) {
 				endpoints = append(endpoints, endpoint)

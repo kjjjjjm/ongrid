@@ -12,6 +12,7 @@ import (
 	"strings"
 	"text/template"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 )
 
@@ -304,8 +305,8 @@ service:
 
 // render builds otelcol.yaml bytes from a PluginConfig. Spec keys:
 //
-//	grpc_endpoint : string (default "127.0.0.1:4317")
-//	http_endpoint : string (default "127.0.0.1:4318")
+//	grpc_endpoint : string (default ONGRID_EDGE_TRACES_GRPC_ADDR or "127.0.0.1:4317")
+//	http_endpoint : string (default ONGRID_EDGE_TRACES_HTTP_ADDR or "127.0.0.1:4318")
 //	extra_attrs : map[string]string (extra resource attributes)
 //	tls_insecure_skip_verify : bool (default TRUE — skip cert verification
 //	                          on the OTLP/HTTPS push so the standard
@@ -336,8 +337,8 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 		return nil, fmt.Errorf("traces plugin: device_id required (set ONGRID_EDGE_ID)")
 	}
 
-	grpcEP := stringOr(cfg.Spec, "grpc_endpoint", "127.0.0.1:4317")
-	httpEP := stringOr(cfg.Spec, "http_endpoint", "127.0.0.1:4318")
+	grpcEP := stringOr(cfg.Spec, "grpc_endpoint", edgeconfig.ListenerTracesGRPC.Addr())
+	httpEP := stringOr(cfg.Spec, "http_endpoint", edgeconfig.ListenerTracesHTTP.Addr())
 	type receiver struct{ Name, GRPC, HTTP string }
 	receivers := []receiver{{Name: "otlp", GRPC: grpcEP, HTTP: httpEP}}
 	receiverNames := []string{"otlp"}
@@ -352,10 +353,10 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 				return nil, fmt.Errorf("traces plugin: invalid Docker bridge address %q", address)
 			}
 			r := receiver{Name: fmt.Sprintf("otlp/docker_%d", i)}
-			if endpoint := net.JoinHostPort(ip.String(), "4317"); defaultGRPC && !slices.Contains(blockedEndpoints, endpoint) {
+			if endpoint := net.JoinHostPort(ip.String(), edgeconfig.ListenerTracesGRPC.Port()); defaultGRPC && !slices.Contains(blockedEndpoints, endpoint) {
 				r.GRPC = endpoint
 			}
-			if endpoint := net.JoinHostPort(ip.String(), "4318"); defaultHTTP && !slices.Contains(blockedEndpoints, endpoint) {
+			if endpoint := net.JoinHostPort(ip.String(), edgeconfig.ListenerTracesHTTP.Port()); defaultHTTP && !slices.Contains(blockedEndpoints, endpoint) {
 				r.HTTP = endpoint
 			}
 			if r.GRPC == "" && r.HTTP == "" {
@@ -439,7 +440,7 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 		stringOr(cfg.Spec, "metrics_remote_write_bearer", ""),
 	)
 	collectorMetricsHost, collectorMetricsPort, err := collectorMetricsAddress(
-		stringOr(cfg.Spec, "collector_metrics_endpoint", "127.0.0.1:8888"),
+		stringOr(cfg.Spec, "collector_metrics_endpoint", edgeconfig.ListenerTracesTelemetry.Addr()),
 	)
 	if err != nil {
 		return nil, err
@@ -456,7 +457,7 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 	}
 	data := map[string]any{
 		"ServiceEnvironments":        environments,
-		"HealthEndpoint":             stringOr(cfg.Spec, "health_endpoint", "127.0.0.1:13133"),
+		"HealthEndpoint":             stringOr(cfg.Spec, "health_endpoint", edgeconfig.ListenerTracesHealth.Addr()),
 		"EdgeID":                     cfg.EdgeID,
 		"EmitDeviceID":               !omitDeviceID,
 		"Receivers":                  receivers,

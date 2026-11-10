@@ -211,14 +211,37 @@ for exporter in mysqld_exporter postgres_exporter redis_exporter mongodb_exporte
 done
 
 # ---------- render env file ----------
-# Preserve only this setting; never source the credentials file as shell code.
-METRICS_ENV_LINE=""
-if [[ ${ONGRID_EDGE_METRICS_ADDR+x} ]]; then
-    [[ "$ONGRID_EDGE_METRICS_ADDR" != *$'\n'* && "$ONGRID_EDGE_METRICS_ADDR" != *$'\r'* ]] || { log_error "metrics address must be one line"; exit 1; }
-    METRICS_ENV_LINE="ONGRID_EDGE_METRICS_ADDR=$ONGRID_EDGE_METRICS_ADDR"
-elif [[ -f "$ENV_FILE" ]]; then
-    METRICS_ENV_LINE=$(sed -n '/^ONGRID_EDGE_METRICS_ADDR=/p' "$ENV_FILE")
-fi
+# Preserve only the local listener settings; never source the credentials file as shell code.
+# Keep this list in sync with HostListeners() in internal/edgeagent/config/ports.go.
+LISTENER_ENV_KEYS="
+    ONGRID_EDGE_METRICS_ADDR
+    ONGRID_EDGE_PPROF_ADDR
+    ONGRID_EDGE_HOSTMETRICS_ADDR
+    ONGRID_EDGE_PROCMETRICS_ADDR
+    ONGRID_EDGE_TRACES_GRPC_ADDR
+    ONGRID_EDGE_TRACES_HTTP_ADDR
+    ONGRID_EDGE_TRACES_HEALTH_ADDR
+    ONGRID_EDGE_TRACES_TELEMETRY_ADDR
+    ONGRID_EDGE_TRACES_APP_METRICS_ADDR
+    ONGRID_EDGE_LOGS_HEALTH_ADDR
+    ONGRID_EDGE_LOGS_TELEMETRY_ADDR
+    ONGRID_EDGE_AUTOAPM_GRPC_ADDR
+    ONGRID_EDGE_AUTOAPM_HTTP_ADDR
+    ONGRID_EDGE_AUTOAPM_HEALTH_ADDR
+    ONGRID_EDGE_AUTOAPM_TELEMETRY_ADDR
+    ONGRID_EDGE_AUTOAPM_METRICS_ADDR
+"
+LISTENER_ENV_LINES=""
+for _listener_key in $LISTENER_ENV_KEYS; do
+    if declare -p "$_listener_key" >/dev/null 2>&1; then
+        _listener_value="${!_listener_key}"
+        [[ "$_listener_value" != *$'\n'* && "$_listener_value" != *$'\r'* ]] || { log_error "$_listener_key must be one line"; exit 1; }
+        LISTENER_ENV_LINES+="$_listener_key=$_listener_value"$'\n'
+    elif [[ -f "$ENV_FILE" ]]; then
+        _listener_line=$(sed -n "/^${_listener_key}=/p" "$ENV_FILE" | tail -n 1)
+        [[ -z "$_listener_line" ]] || LISTENER_ENV_LINES+="$_listener_line"$'\n'
+    fi
+done
 log_info "rendering $ENV_FILE"
 mkdir -p "$CONFIG_DIR"
 chmod 750 "$CONFIG_DIR"
@@ -237,8 +260,8 @@ sed \
     -e "s|__ACCESS_KEY__|$(esc "$EDGE_ACCESS_KEY")|g" \
     -e "s|__SECRET_KEY__|$(esc "$EDGE_SECRET_KEY")|g" \
     "$TEMPLATE" > "$ENV_FILE"
-if [[ -n "$METRICS_ENV_LINE" ]]; then
-    printf '\n%s\n' "$METRICS_ENV_LINE" >> "$ENV_FILE"
+if [[ -n "$LISTENER_ENV_LINES" ]]; then
+    printf '\n%s' "$LISTENER_ENV_LINES" >> "$ENV_FILE"
 fi
 chmod 640 "$ENV_FILE"
 chown root:root "$ENV_FILE"

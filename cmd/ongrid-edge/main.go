@@ -49,10 +49,6 @@ var version = "dev"
 // from cloud metrics (:9100) so both can run on the same dev host.
 const edgeMetricsAddr = ":9101"
 
-// Keep the Edge's own runtime profiles local and off the conventional :6060
-// application port so the default target cannot silently profile another app.
-const edgePprofAddr = "127.0.0.1:16060"
-
 func main() {
 	if err := run(); err != nil {
 		os.Exit(1)
@@ -141,6 +137,13 @@ func run() error {
 		}
 		log.Info("kubernetes data plane shutdown complete")
 		return nil
+	}
+
+	// Fail fast on malformed or conflicting ONGRID_EDGE_*_ADDR overrides so a
+	// typo cannot silently rebind the port the operator meant to move away from.
+	if err := edgeconfig.ValidateHostListeners(); err != nil {
+		log.Error("invalid edge listener configuration", slog.Any("err", err))
+		return fmt.Errorf("edge listener configuration: %w", err)
 	}
 
 	k8sInfo, enrollmentPending, err := edgek8s.EnsureEnrollment(rootCtx, cfg, version, log)
@@ -303,13 +306,19 @@ func run() error {
 		}
 		return runEdgeMetrics(egCtx, metricsMux, metricsLog)
 	})
-	pprofServer := httpserver.New(edgePprofAddr, http.DefaultServeMux, log.With(slog.String("listener", "pprof")))
-	eg.Go(func() error {
-		if err := pprofServer.Start(egCtx); err != nil {
-			log.Warn("pprof server disabled", slog.Any("err", err))
-		}
-		return nil
-	})
+	// The Edge's own runtime profiles stay local (127.0.0.1:16060 by default,
+	// off the conventional :6060). ONGRID_EDGE_PPROF_ADDR moves or disables it.
+	if edgeconfig.ListenerPprof.Disabled() {
+		log.Info("pprof server disabled by configuration", slog.String("env", edgeconfig.ListenerPprof.Env))
+	} else {
+		pprofServer := httpserver.New(edgeconfig.ListenerPprof.Addr(), http.DefaultServeMux, log.With(slog.String("listener", "pprof")))
+		eg.Go(func() error {
+			if err := pprofServer.Start(egCtx); err != nil {
+				log.Warn("pprof server disabled", slog.Any("err", err))
+			}
+			return nil
+		})
+	}
 	// When agent.Run returns (clean ctx cancel OR upgrade
 	// swap), cancel rootCtx so every other goroutine — plugin
 	// supervisor, scraper, metrics http server — unwinds and the

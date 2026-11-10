@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/pkg/tunnel"
 )
 
@@ -241,7 +242,7 @@ func (t *TunnelConfigFetcher) withApplicationMetricsDefaults(out map[string]Plug
 	}
 	endpoint, _ := spec["metrics_export_endpoint"].(string)
 	if endpoint == "" {
-		endpoint = "127.0.0.1:9464"
+		endpoint = edgeconfig.ListenerTracesAppMetrics.Addr()
 	}
 	host, _, err := net.SplitHostPort(endpoint)
 	if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {

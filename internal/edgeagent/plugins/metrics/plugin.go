@@ -99,8 +99,9 @@ func New(pusher Pusher, edgeID EdgeIDProvider, log *slog.Logger) *Plugin {
 	if edgeID == nil {
 		edgeID = func() uint64 { return 0 }
 	}
-	targetHealth := make(map[string]targetErrors, len(defaultURLs))
-	for _, target := range defaultURLs {
+	defaults := defaultURLs()
+	targetHealth := make(map[string]targetErrors, len(defaults))
+	for _, target := range defaults {
 		targetHealth[target] = targetErrors{}
 	}
 	return &Plugin{

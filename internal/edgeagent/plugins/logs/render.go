@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 	"github.com/ongridio/ongrid/internal/pkg/autoapm"
 	"gopkg.in/yaml.v3"
@@ -274,7 +275,7 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 					"rebound_needed_threshold_mib": 512, "rebound_trigger_threshold_mib": 128,
 				},
 			},
-			"health_check/logs": map[string]interface{}{"endpoint": "127.0.0.1:13134"},
+			"health_check/logs": map[string]interface{}{"endpoint": edgeconfig.ListenerLogsHealth.Addr()},
 		},
 		"receivers":  receivers,
 		"processors": processors,
@@ -292,7 +293,7 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 					"readers": []interface{}{map[string]interface{}{
 						"pull": map[string]interface{}{"exporter": map[string]interface{}{
 							"prometheus": map[string]interface{}{
-								"host": "127.0.0.1", "port": 8889,
+								"host": logsTelemetryHost(), "port": edgeconfig.ListenerLogsTelemetry.PortInt(),
 								"without_type_suffix": true, "without_units": true,
 							},
 						}},
@@ -957,4 +958,14 @@ func jobNameSafe(value string) string {
 		return "source"
 	}
 	return result
+}
+
+// logsTelemetryHost is the bind host for the collector's own Prometheus
+// telemetry (127.0.0.1:8889 by default, ONGRID_EDGE_LOGS_TELEMETRY_ADDR to
+// move it). A ":port" override means all interfaces.
+func logsTelemetryHost() string {
+	if host := edgeconfig.ListenerLogsTelemetry.Host(); host != "" {
+		return host
+	}
+	return "0.0.0.0"
 }

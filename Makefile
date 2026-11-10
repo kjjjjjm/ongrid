@@ -136,7 +136,7 @@ test-k8s-autoapm: ## 隔离 Linux 环境验证 Chart 权限与非 root OBI 采�
 	env ONGRID_TEST_K8S_AUTOAPM_BINARY="$$tmp_dir/autoapm.test" "$$tmp_dir/edge.test" -test.v -test.timeout=7m -test.run='^TestK8sHostAutoAPMIntegration$$'
 
 .PHONY: test-edge-metrics-env
-test-edge-metrics-env: ## Edge 诊断端口安装配置保留检查
+test-edge-metrics-env: ## Edge 本地监听端口安装配置保留检查
 	bash -n deploy/install/edge/install.sh deploy/install/edge/install-edge.sh
 	python3 scripts/test-edge-metrics-env.py
 

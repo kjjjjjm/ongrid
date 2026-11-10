@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 )
 
@@ -49,6 +50,10 @@ const Name = "hostmetrics"
 // the ongrid manager container's metrics endpoint already binds 9100
 // via docker-proxy.
 const DefaultListenAddress = ":9102"
+
+// ListenAddress is the effective default: ONGRID_EDGE_HOSTMETRICS_ADDR when
+// set, DefaultListenAddress otherwise. spec.listen_address still wins.
+func ListenAddress() string { return edgeconfig.ListenerHostMetrics.Addr() }
 
 // supplementaryInterval is how often the producer rewrites the textfile
 // shim metrics. Tuned to match the manager's Prom scrape cadence (15s
@@ -231,7 +236,7 @@ node_nf_conntrack_entries_limit %s
 }
 
 func buildArgs(cfg plugins.PluginConfig, _ string) []string {
-	listen := stringSpec(cfg, "listen_address", DefaultListenAddress)
+	listen := stringSpec(cfg, "listen_address", ListenAddress())
 	args := []string{
 		fmt.Sprintf("--web.listen-address=%s", listen),
 	}
