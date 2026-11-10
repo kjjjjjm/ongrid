@@ -70,4 +70,26 @@ for name in ("install.sh", "install-edge.sh"):
         assert result.returncode == 0, (name, result.stderr)
         kept = [l for l in env_file.read_text().splitlines() if l.startswith('ONGRID_EDGE_')]
         assert kept == ['ONGRID_EDGE_PPROF_ADDR=off', 'ONGRID_EDGE_HOSTMETRICS_ADDR=:19102', 'ONGRID_EDGE_PROCMETRICS_ADDR=:19256'], (name, kept)
+    if name == 'install.sh':
+        # Manager-published defaults: exported value > server file > existing local file.
+        server = ('# fleet defaults\nONGRID_EDGE_HOSTMETRICS_ADDR=127.0.0.1:19102\n'
+                  'ONGRID_EDGE_PROCMETRICS_ADDR=127.0.0.1:19256\n'
+                  'ONGRID_EDGE_SECRET_KEY=must-not-copy\nONGRID_EDGE_PPROF_ADDR=bad value\n'
+                  'export ONGRID_EDGE_LOGS_HEALTH_ADDR=127.0.0.1:1\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / 'edge.env'
+            env_file.write_text('OLD=1\nONGRID_EDGE_HOSTMETRICS_ADDR=:9999\nONGRID_EDGE_METRICS_ADDR=:19101\n')
+            server_file = Path(tmp) / 'listeners.env'
+            server_file.write_text(server)
+            env = dict(os.environ, ENV_FILE=str(env_file), LISTENER_SERVER_FILE=str(server_file),
+                       ONGRID_EDGE_PROCMETRICS_ADDR=':29256')
+            for k in go_keys:
+                if k != 'ONGRID_EDGE_PROCMETRICS_ADDR':
+                    env.pop(k, None)
+            result = subprocess.run(['bash', '-eu', '-o', 'pipefail', '-c', script], env=env, capture_output=True, text=True)
+            assert result.returncode == 0, (name, result.stderr)
+            kept = [l for l in env_file.read_text().splitlines() if l.startswith('ONGRID_EDGE_')]
+            assert kept == ['ONGRID_EDGE_METRICS_ADDR=:19101',
+                            'ONGRID_EDGE_HOSTMETRICS_ADDR=127.0.0.1:19102',
+                            'ONGRID_EDGE_PROCMETRICS_ADDR=:29256'], (name, kept)
     print(name + ': listener address install/reinstall checks passed')

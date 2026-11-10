@@ -77,7 +77,7 @@ on_error() {
     local exit_code=$?
     log_error "install failed at line $1 (exit $exit_code)"
     # Cleanup must not replace the original failure status.
-    rm -f "${TMP_BIN:-}" "${PENDING_ENV_FILE:-}" || true
+    rm -f "${TMP_BIN:-}" "${PENDING_ENV_FILE:-}" "${LISTENER_SERVER_FILE:-}" || true
     exit "$exit_code"
 }
 trap 'on_error "$LINENO"' ERR
@@ -281,6 +281,22 @@ mkdir -p "$ENV_DIR"
 chown root:root "$ENV_DIR"
 chmod 750 "$ENV_DIR"
 
+# Optional fleet-wide listener defaults published next to the binary on the
+# Manager (<install dir>/edge/ongrid-edge.listeners.env). Only the
+# ONGRID_EDGE_*_ADDR keys listed below are read from it; it never carries
+# credentials and is never sourced as shell code. A missing file is normal.
+LISTENER_SERVER_FILE=""
+if [[ "${ONGRID_EDGE_LISTENER_DEFAULTS:-on}" != "off" ]]; then
+    LISTENER_SERVER_FILE=$(mktemp /tmp/ongrid-edge-listeners.XXXXXX)
+    if curl -fsLk --retry 2 --retry-delay 2 -o "$LISTENER_SERVER_FILE" \
+            "https://${SERVER_HTTP_ADDR}/edge/ongrid-edge.listeners.env" && [[ -s "$LISTENER_SERVER_FILE" ]]; then
+        sed -i 's/\r$//' "$LISTENER_SERVER_FILE"
+        log_info "applying listener defaults from https://${SERVER_HTTP_ADDR}/edge/ongrid-edge.listeners.env"
+    else
+        rm -f "$LISTENER_SERVER_FILE"
+        LISTENER_SERVER_FILE=""
+    fi
+fi
 # Preserve only the local listener settings; never source the credentials file as shell code.
 # Keep this list in sync with HostListeners() in internal/edgeagent/config/ports.go.
 LISTENER_ENV_KEYS="
@@ -307,11 +323,15 @@ for _listener_key in $LISTENER_ENV_KEYS; do
         _listener_value="${!_listener_key}"
         [[ "$_listener_value" != *$'\n'* && "$_listener_value" != *$'\r'* ]] || { log_error "$_listener_key must be one line"; exit 1; }
         LISTENER_ENV_LINES+="$_listener_key=$_listener_value"$'\n'
+    elif [[ -n "${LISTENER_SERVER_FILE:-}" ]] && _listener_line=$(grep -E "^${_listener_key}=[^[:space:]]*$" "$LISTENER_SERVER_FILE" | tail -n 1) && [[ -n "$_listener_line" ]]; then
+        LISTENER_ENV_LINES+="$_listener_line"$'\n'
     elif [[ -f "$ENV_FILE" ]]; then
         _listener_line=$(sed -n "/^${_listener_key}=/p" "$ENV_FILE" | tail -n 1)
         [[ -z "$_listener_line" ]] || LISTENER_ENV_LINES+="$_listener_line"$'\n'
     fi
 done
+rm -f "${LISTENER_SERVER_FILE:-}"
+LISTENER_SERVER_FILE=""
 if [[ -n "$PENDING_ENV_FILE" ]]; then
     install -m 0640 -o root -g root "$PENDING_ENV_FILE" "$ENV_FILE"
     rm -f "$PENDING_ENV_FILE"
