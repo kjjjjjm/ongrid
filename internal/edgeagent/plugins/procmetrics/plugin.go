@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"text/template"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +38,10 @@ const Name = "procmetrics"
 
 // DefaultListenAddress avoids the 9100 / 9102 host-metric ports.
 const DefaultListenAddress = ":9256"
+
+// ListenAddress is the effective default: ONGRID_EDGE_PROCMETRICS_ADDR when
+// set, DefaultListenAddress otherwise. spec.listen_address still wins.
+func ListenAddress() string { return edgeconfig.ListenerProcMetrics.Addr() }
 
 // New constructs the procmetrics plugin.
 func New(binDir, workDir string, log *slog.Logger) plugins.Plugin {
@@ -105,7 +110,7 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 }
 
 func buildArgs(cfg plugins.PluginConfig, configFile string) []string {
-	listen := DefaultListenAddress
+	listen := ListenAddress()
 	procfs := ""
 	gatherSmaps := false
 	threads := false

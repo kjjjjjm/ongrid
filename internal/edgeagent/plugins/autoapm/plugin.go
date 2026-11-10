@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins/custommetrics"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins/traces"
@@ -92,7 +93,7 @@ func (p *Plugin) Configure(cfg plugins.PluginConfig) error {
 		}
 		scrapeCfg := plugins.PluginConfig{Enabled: true, Spec: map[string]interface{}{
 			"targets": []interface{}{map[string]interface{}{
-				"id": "autoapm", "target_url": "http://127.0.0.1:9465/metrics", "source_label": "obi",
+				"id": "autoapm", "target_url": edgeconfig.LocalURL(edgeconfig.ListenerAutoAPMMetrics.Addr(), "/metrics"), "source_label": "obi",
 				"scrape_interval": "15s", "scrape_timeout": "10s", "push_timeout": "60s", "sample_limit": 0,
 			}},
 		}}

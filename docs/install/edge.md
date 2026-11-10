@@ -38,6 +38,55 @@ fixed diagnostics listeners and HTTP probes. Logs, OBI, OTLP, pprof, and exporte
 listeners are not changed by this fallback. If automatic allocation also fails,
 startup fails with the bind errors; no existing process is stopped or reused.
 
+## Customizing local listener ports
+
+Every TCP port that a host Edge or its plugin subprocesses listen on can be
+moved with an environment variable in `/etc/ongrid-edge/ongrid-edge.env`.
+Values use `host:port`, or `:port` for all interfaces; unset or blank keeps the
+default. Restart `ongrid-edge` after editing the file.
+
+| Variable | Default | Listener |
+| --- | --- | --- |
+| `ONGRID_EDGE_METRICS_ADDR` | `:9101` (automatic) | Edge `/healthz` and `/metrics` (see above) |
+| `ONGRID_EDGE_PPROF_ADDR` | `127.0.0.1:16060` | Edge pprof; `off` disables it |
+| `ONGRID_EDGE_HOSTMETRICS_ADDR` | `:9102` | hostmetrics `node_exporter` |
+| `ONGRID_EDGE_PROCMETRICS_ADDR` | `:9256` | procmetrics `process-exporter` |
+| `ONGRID_EDGE_TRACES_GRPC_ADDR` | `127.0.0.1:4317` | traces OTLP gRPC receiver for applications |
+| `ONGRID_EDGE_TRACES_HTTP_ADDR` | `127.0.0.1:4318` | traces OTLP HTTP receiver for applications |
+| `ONGRID_EDGE_TRACES_HEALTH_ADDR` | `127.0.0.1:13133` | traces collector health check |
+| `ONGRID_EDGE_TRACES_TELEMETRY_ADDR` | `127.0.0.1:8888` | traces collector self-metrics |
+| `ONGRID_EDGE_TRACES_APP_METRICS_ADDR` | `127.0.0.1:9464` | traces application metrics exporter |
+| `ONGRID_EDGE_LOGS_HEALTH_ADDR` | `127.0.0.1:13134` | logs collector health check |
+| `ONGRID_EDGE_LOGS_TELEMETRY_ADDR` | `127.0.0.1:8889` | logs collector self-metrics |
+| `ONGRID_EDGE_AUTOAPM_GRPC_ADDR` | `127.0.0.1:14317` | OBI collector OTLP gRPC |
+| `ONGRID_EDGE_AUTOAPM_HTTP_ADDR` | `127.0.0.1:14318` | OBI collector OTLP HTTP (OBI exports here) |
+| `ONGRID_EDGE_AUTOAPM_HEALTH_ADDR` | `127.0.0.1:14333` | OBI collector health check |
+| `ONGRID_EDGE_AUTOAPM_TELEMETRY_ADDR` | `127.0.0.1:18888` | OBI collector self-metrics |
+| `ONGRID_EDGE_AUTOAPM_METRICS_ADDR` | `127.0.0.1:9465` | OBI collector metrics exporter |
+
+Behavior:
+
+- Consumers follow the producers. The metrics pipeline scrapes the configured
+  hostmetrics and procmetrics ports, Docker bridge receivers reuse the traces
+  OTLP ports, OBI exports to the configured autoapm OTLP HTTP port, and the
+  application metrics scrape follows `ONGRID_EDGE_TRACES_APP_METRICS_ADDR`.
+  Wildcard binds are scraped via `127.0.0.1`.
+- An explicit plugin spec pushed by the Manager (for example
+  `hostmetrics.listen_address` or `traces.http_endpoint`) still takes
+  precedence over these variables. If you move an exporter through its spec,
+  also set `metrics.target_urls`; prefer the variables to keep both in sync.
+- Managed database exporters keep their per-source `listen_address`. The Edge
+  rejects a source port that collides with any listener above.
+- The Edge validates every variable at startup and exits with an error naming
+  the variable on malformed addresses or port conflicts between listeners.
+- Applications instrumented with OpenTelemetry must send to the new OTLP port
+  after `ONGRID_EDGE_TRACES_*_ADDR` changes.
+- Both Linux installers preserve these lines on reinstall, and values exported
+  to the installer override the preserved ones.
+- Kubernetes data-plane pods keep their Chart-managed ports.
+- Rolling back to an Edge build without this support ignores the variables and
+  uses the defaults again; make sure those ports are free first.
+
 ## Kubernetes node capabilities
 
 The node Chart uses its existing `SYS_ADMIN` capability for BPF, performance

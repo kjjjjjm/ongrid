@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins/metricscommon"
 )
 
@@ -80,7 +81,7 @@ func parseSpec(spec map[string]interface{}) ([]sourceSpec, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sources[%d].listen_address: %w", i, err)
 		}
-		if owner, exists := reservedListenPorts[port]; exists {
+		if owner, exists := reservedListenPorts()[port]; exists {
 			return nil, fmt.Errorf("sources[%d].listen_address port %s conflicts with %s", i, port, owner)
 		}
 		if prevID, exists := seenListenPorts[port]; exists {
@@ -773,10 +774,10 @@ var mongoDBCollectorFlags = map[string]struct{}{
 	"pbm":                {},
 }
 
-var reservedListenPorts = map[string]string{
-	"9102": "hostmetrics",
-	"9256": "procmetrics",
-}
+// reservedListenPorts lists host Edge listener ports (exporters, collector
+// receivers, health and telemetry endpoints) that a managed database exporter
+// must not reuse. It follows the ONGRID_EDGE_*_ADDR overrides.
+func reservedListenPorts() map[string]string { return edgeconfig.ReservedPorts() }
 
 func validateListenAddress(v string) error {
 	host, _, err := net.SplitHostPort(v)

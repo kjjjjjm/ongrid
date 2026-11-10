@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 
 	"github.com/ongridio/ongrid/internal/edgeagent/collector"
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 	"github.com/ongridio/ongrid/internal/pkg/tunnel"
 )
@@ -40,14 +41,17 @@ type specView struct {
 	DedupeFilesystemsByDevice bool
 }
 
-// Defaults match the host/proc-metrics plugins' subprocesses
-// (node_exporter on :9102, process_exporter on :9256 — see
-// internal/edgeagent/plugins/hostmetrics, .../procmetrics).
-// Localhost only because all processes live in the same systemd unit
-// on the edge.
-var defaultURLs = []string{
-	"http://127.0.0.1:9102/metrics",
-	"http://127.0.0.1:9256/metrics",
+// defaultURLs follows the host/proc-metrics plugins' subprocesses
+// (node_exporter on :9102, process_exporter on :9256 by default — see
+// internal/edgeagent/plugins/hostmetrics, .../procmetrics). The ports come
+// from ONGRID_EDGE_HOSTMETRICS_ADDR / ONGRID_EDGE_PROCMETRICS_ADDR so moving
+// an exporter keeps the scrape target in sync. Wildcard binds are reached
+// via 127.0.0.1 because all processes live in the same systemd unit.
+func defaultURLs() []string {
+	return []string{
+		edgeconfig.LocalURL(edgeconfig.ListenerHostMetrics.Addr(), "/metrics"),
+		edgeconfig.LocalURL(edgeconfig.ListenerProcMetrics.Addr(), "/metrics"),
+	}
 }
 
 const (
@@ -66,7 +70,7 @@ const (
 //	<missing> → defaultURLs
 func parseSpec(spec map[string]interface{}) (specView, error) {
 	out := specView{
-		URLs:     append([]string(nil), defaultURLs...),
+		URLs:     defaultURLs(),
 		Interval: defaultInterval,
 		Timeout:  defaultTimeout,
 	}

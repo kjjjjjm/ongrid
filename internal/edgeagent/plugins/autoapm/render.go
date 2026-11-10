@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	edgeconfig "github.com/ongridio/ongrid/internal/edgeagent/config"
 	"github.com/ongridio/ongrid/internal/edgeagent/plugins"
 	contract "github.com/ongridio/ongrid/internal/pkg/autoapm"
 	"gopkg.in/yaml.v3"
@@ -64,8 +65,8 @@ func render(cfg plugins.PluginConfig) ([]byte, error) {
 		"attributes":          map[string]interface{}{"kubernetes": kubernetes},
 		"discovery":           map[string]interface{}{"services": rules, "exclude_otel_instrumented_services": true},
 		"ebpf":                ebpf,
-		"otel_traces_export":  map[string]interface{}{"endpoint": "http://127.0.0.1:14318/v1/traces", "protocol": "http/protobuf", "instrumentations": []string{"http", "grpc", "sql", "redis", "kafka", "mongo"}, "sampler": sampler},
-		"otel_metrics_export": map[string]interface{}{"endpoint": "http://127.0.0.1:14318/v1/metrics", "protocol": "http/protobuf", "interval": "15s", "histogram_aggregation": "explicit_bucket_histogram", "instrumentations": []string{"http", "grpc"}},
+		"otel_traces_export":  map[string]interface{}{"endpoint": edgeconfig.LocalURL(edgeconfig.ListenerAutoAPMHTTP.Addr(), "/v1/traces"), "protocol": "http/protobuf", "instrumentations": []string{"http", "grpc", "sql", "redis", "kafka", "mongo"}, "sampler": sampler},
+		"otel_metrics_export": map[string]interface{}{"endpoint": edgeconfig.LocalURL(edgeconfig.ListenerAutoAPMHTTP.Addr(), "/v1/metrics"), "protocol": "http/protobuf", "interval": "15s", "histogram_aggregation": "explicit_bucket_histogram", "instrumentations": []string{"http", "grpc"}},
 		"metrics":             map[string]interface{}{"features": []string{"application", "application_runtime"}},
 	})
 }
@@ -89,13 +90,13 @@ func collectorConfig(cfg plugins.PluginConfig, s contract.Spec) plugins.PluginCo
 		}
 	}
 	cfg.Spec = map[string]interface{}{
-		"grpc_endpoint": "127.0.0.1:14317", "http_endpoint": "127.0.0.1:14318",
-		"enable_metrics": true, "metrics_export_endpoint": "127.0.0.1:9465",
+		"grpc_endpoint": edgeconfig.ListenerAutoAPMGRPC.Addr(), "http_endpoint": edgeconfig.ListenerAutoAPMHTTP.Addr(),
+		"enable_metrics": true, "metrics_export_endpoint": edgeconfig.ListenerAutoAPMMetrics.Addr(),
 		// Share the Edge resource budget; keep batches and queues bounded.
 		"bounded_pipelines":            true,
 		"tls_insecure_skip_verify":     s.TLSInsecureSkipVerify,
-		"collector_metrics_endpoint":   "127.0.0.1:18888",
-		"health_endpoint":              "127.0.0.1:14333",
+		"collector_metrics_endpoint":   edgeconfig.ListenerAutoAPMTelemetry.Addr(),
+		"health_endpoint":              edgeconfig.ListenerAutoAPMHealth.Addr(),
 		"extra_attrs":                  attrs,
 		"service_environments":         environments,
 		"kubernetes_service_namespace": s.Kubernetes != nil,
