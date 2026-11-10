@@ -83,6 +83,30 @@ Behavior:
   after `ONGRID_EDGE_TRACES_*_ADDR` changes.
 - Both Linux installers preserve these lines on reinstall, and values exported
   to the installer override the preserved ones.
+
+### Fleet-wide defaults for new hosts
+
+To give every host installed with the Manager's `curl … /install.sh | bash`
+command the same listener settings, publish them on the Manager:
+
+```bash
+# on the Manager host (install dir, e.g. /opt/ongrid)
+cat > /opt/ongrid/edge/ongrid-edge.listeners.env <<'EOF'
+ONGRID_EDGE_HOSTMETRICS_ADDR=127.0.0.1:19102
+ONGRID_EDGE_PROCMETRICS_ADDR=127.0.0.1:19256
+ONGRID_EDGE_PPROF_ADDR=off
+EOF
+chmod 0644 /opt/ongrid/edge/ongrid-edge.listeners.env
+```
+
+`install.sh` downloads `https://<manager>/edge/ongrid-edge.listeners.env` and
+copies only the listener variables listed above, one `KEY=value` per line with
+no spaces. Comments, `export` lines, credentials and unknown keys are ignored;
+the file is never sourced. A missing file is skipped. Precedence per variable:
+a value exported to the installer, then the Manager file, then the host's
+existing env file. Set `ONGRID_EDGE_LISTENER_DEFAULTS=off` to skip the
+download. The Manager `install.sh --force` and `upgrade.sh` keep this file when
+they replace the `edge/` directory.
 - Kubernetes data-plane pods keep their Chart-managed ports.
 - Rolling back to an Edge build without this support ignores the variables and
   uses the defaults again; make sure those ports are free first.

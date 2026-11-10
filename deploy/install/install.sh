@@ -522,6 +522,11 @@ if [[ -d "$SCRIPT_DIR/searxng" ]]; then
     cp -rf "$SCRIPT_DIR/searxng/." "$INSTALL_DIR/searxng/"
 fi
 if [[ -n "$EDGE_STAGE_DIR" ]]; then
+    # Keep the operator-published Edge listener defaults (served as
+    # /edge/ongrid-edge.listeners.env) across the asset swap.
+    if [[ -f "$INSTALL_DIR/edge/ongrid-edge.listeners.env" && ! -e "$EDGE_STAGE_DIR/ongrid-edge.listeners.env" ]]; then
+        cp -p "$INSTALL_DIR/edge/ongrid-edge.listeners.env" "$EDGE_STAGE_DIR/ongrid-edge.listeners.env"
+    fi
     if [[ -d "$INSTALL_DIR/edge" ]]; then
         EDGE_BACKUP_DIR=$(mktemp -d "$INSTALL_DIR/.edge-backup.XXXXXX")
         mv "$INSTALL_DIR/edge" "$EDGE_BACKUP_DIR/edge"
