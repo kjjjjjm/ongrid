@@ -84,15 +84,15 @@ func NewBridge(repo Repo, agent AgentSession, serviceUserID uint64, log *slog.Lo
 // process. The provider-specific webhook handler decrypts + decodes
 // to this shape so the bridge stays platform-agnostic.
 type InboundMessage struct {
-	Provider      string // "feishu" | "dingtalk"
+	Provider      string // "feishu" | "dingtalk" | "telegram" | "slack" | "wecom"
 	AppID         string // platform-side app_id (== ImApp.AppID)
-	ChatID        string // platform chat / conversation id
+	ChatID        string // platform chat / conversation id (WeCom: group chatid, or the sender's userid in a direct chat)
 	ThreadID      string // optional reply thread id (Feishu root_id)
 	OpenID        string // platform user id of the sender (we currently use this only for logging; S3 will bind)
 	UserName      string // sender display name (logging only)
 	Text          string // normalized message body — text/plain
 	EventID       string // platform event id, used for dedup
-	ReceiveIDType string // platform-specific hint: "chat_id" / "open_id" / "union_id"
+	ReceiveIDType string // platform-specific hint: "chat_id" / "open_id" / "union_id" / WeCom "single" | "group"
 }
 
 // HandleInbound resolves the IM thread → ongrid session and kicks off
@@ -199,8 +199,15 @@ func (b *Bridge) HandleInbound(ctx context.Context, sender Sender, msg InboundMe
 	//    message wasn't a real question; running the agent on it
 	//    would dirty the brand-new session.
 	if wantNew {
-		_, _ = sender.SendText(ctx, msg.ChatID, msg.ReceiveIDType,
+		confirmID, sendErr := sender.SendText(ctx, msg.ChatID, msg.ReceiveIDType,
 			localizeReply(app.DefaultLocale, replyNewSession))
+		// Providers that keep messages open until finished (WeCom stream
+		// replies) would otherwise show the confirmation as still generating.
+		if f, ok := sender.(MessageFinalizer); ok && sendErr == nil && confirmID != "" {
+			if ferr := f.FinishText(ctx, confirmID, ""); ferr != nil {
+				b.log.Warn("finish /new confirmation failed", slog.Any("err", ferr))
+			}
+		}
 		return nil
 	}
 

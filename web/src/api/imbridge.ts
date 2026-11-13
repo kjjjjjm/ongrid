@@ -1,14 +1,17 @@
 import { request } from './client';
 
 // IM bridge app CRUD — admin endpoints for managing Feishu / DingTalk /
-// Telegram / Slack bot registrations. Default mode is `stream` so manager
-// dials out; webhook is fallback for inbound-only environments.
+// WeCom / Telegram / Slack bot registrations. Default mode is `stream` so
+// manager dials out; webhook is fallback for inbound-only environments.
 // Telegram is stream-only (getUpdates long-poll, ADR-031); Slack is
 // stream-only (Socket Mode WebSocket — same proxy-friendly philosophy).
 // Both REQUIRE allow_from for safety: Telegram bots are publicly reachable
 // by username, Slack bots respond to any workspace member by default.
+// WeCom is stream-only too (AI bot long connection; app_id = BotID,
+// app_secret = long-connection Secret); its allow_from is optional because
+// the bot only reaches members of the enterprise.
 
-export type IMProvider = 'feishu' | 'dingtalk' | 'telegram' | 'slack';
+export type IMProvider = 'feishu' | 'dingtalk' | 'wecom' | 'telegram' | 'slack';
 export type IMMode = 'stream' | 'webhook';
 
 // What the manager's stream supervisor last observed for one app's long
@@ -33,7 +36,7 @@ export type IMApp = {
   has_secret: boolean;
   verify_token?: string;
   encrypt_key?: string;
-  // Telegram / Slack sender allowlist.
+  // Telegram / Slack (required) or WeCom (optional) sender allowlist.
   allow_from?: string;
   // Empty = "auto" (LLM mirrors the user). "en" / "zh" pins the reply
   // language regardless of persona — bridge appends a directive to every

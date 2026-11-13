@@ -2,7 +2,7 @@ import { Input, Label } from '@/components/ui';
 import { Hint } from '@/components/ui/Tooltip';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Select } from '@/components/ui/Select';
-// Channels — two-way IM bot admin. CRUD for Larksuite / DingTalk /
+// Channels — two-way IM bot admin. CRUD for Larksuite / DingTalk / WeCom /
 // Telegram / Slack bot registrations. Each item drives one long-connection
 // (stream mode) or one webhook endpoint that the platform calls. Configured
 // bots are grouped by provider; the create / edit form is a Modal. Note: this page was previously called
@@ -46,6 +46,12 @@ const PROVIDER_META: Record<IMProvider, { labelZh: string; labelEn: string; hint
     hintZh: '钉钉企业内部应用，支持 stream 长连接。',
     hintEn: 'DingTalk enterprise app with stream connection support.',
   },
+  wecom: {
+    labelZh: '企业微信',
+    labelEn: 'WeCom',
+    hintZh: '企业微信智能机器人（API 模式 · 长连接）：app_id 填 BotID，app_secret 填长连接 Secret。仅 stream 模式（manager 出站连接 wss://openws.work.weixin.qq.com，无需公网回调 URL）。同一机器人同时只能保持一个长连接，不要和其他 manager 或工具共用。',
+    hintEn: 'WeCom AI bot (API mode · long connection): app_id = BotID, app_secret = the long-connection Secret. Stream-only (manager dials wss://openws.work.weixin.qq.com, no public callback URL). A bot keeps one long connection at a time, so do not share it with another manager or tool.',
+  },
   telegram: {
     labelZh: 'Telegram',
     labelEn: 'Telegram',
@@ -60,7 +66,14 @@ const PROVIDER_META: Record<IMProvider, { labelZh: string; labelEn: string; hint
   },
 };
 
-const IM_PROVIDERS: IMProvider[] = ['feishu', 'dingtalk', 'telegram', 'slack'];
+const IM_PROVIDERS: IMProvider[] = ['feishu', 'dingtalk', 'wecom', 'telegram', 'slack'];
+
+// Providers the manager only reaches over its own outbound connection; the
+// webhook mode is not offered for them.
+const STREAM_ONLY: ReadonlySet<IMProvider> = new Set(['telegram', 'slack', 'wecom']);
+// Providers with a sender allowlist: required for Telegram / Slack, optional
+// for WeCom.
+const ALLOW_FROM: ReadonlySet<IMProvider> = new Set(['telegram', 'slack', 'wecom']);
 
 type IMEditorState =
   | { mode: 'create'; provider: IMProvider }
@@ -132,8 +145,8 @@ export default function SettingsChannels() {
             <span className="font-medium">{tr('IM — 双向聊天', 'Channels — two-way chat')}</span>
           </div>
           {tr(
-            '配置飞书 / 钉钉 / Telegram / Slack 机器人，群里 @bot 或私聊就能开多轮会话。推荐 ',
-            'Configure Larksuite / DingTalk / Telegram / Slack bots so users can @bot in a group (or DM) and get multi-turn conversations. ',
+            '配置飞书 / 钉钉 / 企业微信 / Telegram / Slack 机器人，群里 @bot 或私聊就能开多轮会话。推荐 ',
+            'Configure Larksuite / DingTalk / WeCom / Telegram / Slack bots so users can @bot in a group (or DM) and get multi-turn conversations. ',
           )}
           <b>{tr('stream 模式', 'Stream mode')}</b>
           {tr(
@@ -416,7 +429,7 @@ function IMAppEditor({
         app_secret: serializeSecret(),
         verify_token: verifyToken.trim() || undefined,
         encrypt_key: encryptKey.trim() || undefined,
-        allow_from: provider === 'telegram' || provider === 'slack' ? allowFrom.trim() || undefined : undefined,
+        allow_from: ALLOW_FROM.has(provider) ? allowFrom.trim() || undefined : undefined,
         default_locale: defaultLocale || undefined,
         enabled,
       };
@@ -482,7 +495,7 @@ function IMAppEditor({
               className="w-full"
             >
               <option value="stream">{tr('stream（推荐）', 'stream (recommended)')}</option>
-              {provider !== 'telegram' && provider !== 'slack' && <option value="webhook">webhook</option>}
+              {!STREAM_ONLY.has(provider) && <option value="webhook">webhook</option>}
             </Select>
           </Field>
         </div>
@@ -500,11 +513,11 @@ function IMAppEditor({
           />
         </Field>
 
-        <Field label="app_id" hint={tr('飞书 app_id (cli_xxx) / 钉钉 AppKey / Telegram bot 用户名 / Slack workspace team_id (T…)', 'Larksuite app_id (cli_xxx) / DingTalk AppKey / Telegram bot username / Slack workspace team_id (T…)')}>
+        <Field label="app_id" hint={tr('飞书 app_id (cli_xxx) / 钉钉 AppKey / 企业微信智能机器人 BotID / Telegram bot 用户名 / Slack workspace team_id (T…)', 'Larksuite app_id (cli_xxx) / DingTalk AppKey / WeCom AI bot BotID / Telegram bot username / Slack workspace team_id (T…)')}>
           <Input
             value={appID}
             onChange={(e) => setAppID(e.target.value)}
-            placeholder="cli_a1b2c3d4e5f6"
+            placeholder={provider === 'wecom' ? 'BotID' : 'cli_a1b2c3d4e5f6'}
             className="w-full font-mono"
           />
         </Field>
@@ -558,7 +571,7 @@ function IMAppEditor({
           </>
         ) : (
           <Field label="app_secret" hint={isCreate
-            ? tr('从平台开放后台拷贝（Telegram 填 BotFather 的 token）', 'Copy from the platform admin (Telegram: the BotFather token)')
+            ? tr('从平台开放后台拷贝（Telegram 填 BotFather 的 token；企业微信填 API 模式长连接的 Secret）', 'Copy from the platform admin (Telegram: the BotFather token; WeCom: the API-mode long-connection Secret)')
             : tr('留空 = 保留现值；填了 = 覆盖', 'Empty = keep existing; filled = overwrite')}>
             <div className="flex items-center gap-2">
               <Input
@@ -582,24 +595,15 @@ function IMAppEditor({
           </Field>
         )}
 
-        {(provider === 'telegram' || provider === 'slack') && (
+        {ALLOW_FROM.has(provider) && (
           <Field
             label={tr('allow_from（发送者白名单）', 'allow_from (sender allowlist)')}
-            hint={provider === 'telegram'
-              ? tr(
-                  '必填。逗号分隔的 Telegram 数字 user id，只有名单内的人能和 bot 对话，其他人一律静默忽略。给自己发消息给 @userinfobot 可查到自己的 id。',
-                  'Required. Comma-separated numeric Telegram user IDs — only these may talk to the bot; everyone else is silently ignored. DM @userinfobot to find your own id.',
-                )
-              : tr(
-                  '必填。逗号分隔的 Slack user id（U… 开头，profile 页 URL 里能看到）。仅名单内成员能 @bot 或私聊触发 agent，其他人一律静默忽略，避免 workspace 成员误触。',
-                  'Required. Comma-separated Slack user IDs (start with U…, visible in the profile URL). Only allowlisted members may talk to the bot; everyone else is silently ignored so a wide-open workspace can\'t accidentally trigger the agent.',
-                )
-            }
+            hint={allowFromHint(provider, tr)}
           >
             <Input
               value={allowFrom}
               onChange={(e) => setAllowFrom(e.target.value)}
-              placeholder={provider === 'telegram' ? '8211893274, 123456789' : 'U0ABCD1234, U0EFGH5678'}
+              placeholder={ALLOW_FROM_PLACEHOLDER[provider] ?? ''}
               className="w-full font-mono"
             />
           </Field>
@@ -666,6 +670,32 @@ function IMAppEditor({
       </div>
     </Modal>
   );
+}
+
+const ALLOW_FROM_PLACEHOLDER: Partial<Record<IMProvider, string>> = {
+  telegram: '8211893274, 123456789',
+  slack: 'U0ABCD1234, U0EFGH5678',
+  wecom: 'zhangsan, lisi',
+};
+
+function allowFromHint(provider: IMProvider, tr: (zh: string, en: string) => string): string {
+  switch (provider) {
+    case 'telegram':
+      return tr(
+        '必填。逗号分隔的 Telegram 数字 user id，只有名单内的人能和 bot 对话，其他人一律静默忽略。给自己发消息给 @userinfobot 可查到自己的 id。',
+        'Required. Comma-separated numeric Telegram user IDs — only these may talk to the bot; everyone else is silently ignored. DM @userinfobot to find your own id.',
+      );
+    case 'wecom':
+      return tr(
+        '可选。逗号分隔的企业微信 userid；留空 = 企业内成员都能和 bot 对话。填写后只有名单内成员能触发 agent，其他人静默忽略，被忽略的 userid 会记在 manager 日志里。',
+        'Optional. Comma-separated WeCom userids; empty lets every member of the enterprise talk to the bot. When set, only listed members trigger the agent; others are silently ignored and their userid is logged by the manager.',
+      );
+    default:
+      return tr(
+        '必填。逗号分隔的 Slack user id（U… 开头，profile 页 URL 里能看到）。仅名单内成员能 @bot 或私聊触发 agent，其他人一律静默忽略，避免 workspace 成员误触。',
+        'Required. Comma-separated Slack user IDs (start with U…, visible in the profile URL). Only allowlisted members may talk to the bot; everyone else is silently ignored so a wide-open workspace can\'t accidentally trigger the agent.',
+      );
+  }
 }
 
 function Field({ label, hint, children }: { label: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode }) {

@@ -1,6 +1,6 @@
 // Package imbridge holds the storage shape for the multi-turn IM
 // bridge. An ImApp is the manager-side registration of a
-// Feishu / DingTalk bot application; an ImThread maps one IM
+// Feishu / DingTalk / Telegram / Slack / WeCom bot application; an ImThread maps one IM
 // conversation (group chat / DM / reply thread) to an ongrid
 // chat_session so messages from the same IM thread flow into the
 // same agent conversation.
@@ -31,6 +31,13 @@ const (
 	// stable label the operator picks; only used as the uniqueness key
 	// alongside provider.
 	ProviderSlack = "slack"
+	// ProviderWeCom is stream-only: a WeCom (企业微信) AI bot (智能机器人) in
+	// API mode with the long-connection option. The manager dials
+	// wss://openws.work.weixin.qq.com and authenticates with the bot's
+	// BotID (app_id) and long-connection Secret (app_secret); no public
+	// callback URL, Token or EncodingAESKey is involved. WeCom keeps one
+	// long connection per bot, so a second subscriber evicts the first.
+	ProviderWeCom = "wecom"
 )
 
 // Mode selects how inbound events reach the manager. Stream mode is
@@ -68,6 +75,8 @@ type ImApp struct {
 	// (a public bot with no allowlist is the exact "anyone can reach the
 	// platform" risk — see ADR-031, OpenClaw issue #73756). Unused by
 	// Feishu/DingTalk, which are gated by enterprise-tenant membership.
+	// Optional for WeCom: empty lets every member of the enterprise talk to
+	// the bot; a list of WeCom userids narrows it to those senders.
 	AllowFrom string `gorm:"column:allow_from;type:text"`
 	// IdleTimeoutSeconds is kept for legacy installs but is currently
 	// unused — sessions don't auto-rotate any more. Future "long

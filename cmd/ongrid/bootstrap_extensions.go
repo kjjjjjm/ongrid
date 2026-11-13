@@ -173,7 +173,7 @@ func bootstrapExtensions(rootCtx context.Context, cfg *config.Config, log *slog.
 	aiops.toolsReg.SetNotificationSender(managersvcaiops.NotificationSender{Channels: alerts.alertRepo, Router: notifyRouter})
 	// send_im_message targets a real IM Bridge group by app + platform group ID.
 	// It does not reuse notification channels.
-	aiops.toolsReg.SetIMMessageSender(managersvcimbridge.IMMessageSender{Apps: aiops.imbridgeRepo})
+	aiops.toolsReg.SetIMMessageSender(managersvcimbridge.IMMessageSender{Apps: aiops.imbridgeRepo, WeCom: aiops.imbridgeWeComHub})
 	// serve_page: the assistant can host a generated HTML report at an
 	// internal /pages/<token> URL. Pages live on the persistent volume; the
 	// route is registered on the mux below.
@@ -239,7 +239,7 @@ func bootstrapExtensions(rootCtx context.Context, cfg *config.Config, log *slog.
 			aiopstoolsdec.Wrap(aiopstools.NewInstallSkillTool(managersvcaiops.InstallSkillProposer{Usecase: approvalUC}, log), cbDeps),
 			aiopstoolsdec.Wrap(aiopstools.NewServePageTool(pageStore, log), quickDeps),
 			aiopstoolsdec.Wrap(aiopstools.NewSendNotificationTool(managersvcaiops.NotificationSender{Channels: alerts.alertRepo, Router: notifyRouter}, log), quickDeps),
-			aiopstoolsdec.Wrap(aiopstools.NewSendIMMessageTool(managersvcimbridge.IMMessageSender{Apps: aiops.imbridgeRepo}, log), quickDeps),
+			aiopstoolsdec.Wrap(aiopstools.NewSendIMMessageTool(managersvcimbridge.IMMessageSender{Apps: aiops.imbridgeRepo, WeCom: aiops.imbridgeWeComHub}, log), quickDeps),
 		}); err != nil {
 			log.Error("append runtime extension tools failed", slog.Any("err", err))
 		}
