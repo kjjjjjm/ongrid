@@ -37,7 +37,7 @@ type NotificationSender interface {
 
 // IMMessageSender sends through an IM Bridge application. GroupID is the
 // platform conversation identifier, such as a Feishu open_chat_id, Telegram
-// chat_id, or Slack channel ID.
+// chat_id, Slack channel ID, or WeCom chatid.
 type IMMessageSender interface {
 	SendIMGroupMessage(ctx context.Context, imAppID uint64, groupID, text string) error
 }
@@ -108,7 +108,7 @@ var sendIMMessageSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "im_app_id": { "type": "integer", "description": "Configured IM app ID from Settings → IM." },
-    "group_id": { "type": "string", "description": "Target platform group/conversation ID. Examples: Feishu open_chat_id, Telegram chat_id, or Slack channel ID." },
+    "group_id": { "type": "string", "description": "Target platform group/conversation ID. Examples: Feishu open_chat_id, Telegram chat_id, Slack channel ID, or WeCom chatid (a userid for a direct chat; WeCom only delivers to chats that have already messaged the bot)." },
     "text": { "type": "string", "description": "Message body. Markdown support follows the selected IM provider." }
   },
   "required": ["im_app_id", "group_id", "text"]

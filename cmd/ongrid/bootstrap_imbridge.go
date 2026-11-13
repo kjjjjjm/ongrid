@@ -11,6 +11,7 @@ import (
 	managerbizimbridgefeishu "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/feishu"
 	managerbizimbridgeslack "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/slack"
 	managerbizimbridgetelegram "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/telegram"
+	managerbizimbridgewecom "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/wecom"
 	manageraiopsdata "github.com/ongridio/ongrid/internal/manager/data/aiops/store"
 	managerserverimbridge "github.com/ongridio/ongrid/internal/manager/server/imbridge"
 	managersvcaiops "github.com/ongridio/ongrid/internal/manager/service/aiops"
@@ -21,8 +22,8 @@ type imbridgeModule struct {
 }
 
 func bootstrapIMBridge(rootCtx context.Context, log *slog.Logger, storage *storageModule, models *modelsModule, devices *devicesModule, alerts *alertsModule, telemetry *telemetryModule, aiops *aiopsModule, runtime *runtimeModule) *imbridgeModule {
-	// IM bridge: multi-turn chat via Feishu (S1) / DingTalk
-	// (S2 follow-up). Inbound webhooks land outside the bearer-auth
+	// IM bridge: multi-turn chat via Feishu / DingTalk / Telegram / Slack /
+	// WeCom. Inbound webhooks land outside the bearer-auth
 	// group; signature verification is enforced inside the handler.
 	// Threads map to ongrid chat_sessions owned by a service-account
 	// user — S3 will replace that with per-IM-user binding.
@@ -32,6 +33,7 @@ func bootstrapIMBridge(rootCtx context.Context, log *slog.Logger, storage *stora
 	imbridgeAgentAdapter := managersvcimbridge.NewAiopsAdapter(runtime.aiopsSvc, imBridgeServiceUserID, models.llmSettingsResolver, log)
 	imbridgeSvc := managerbizimbridge.NewBridge(aiops.imbridgeRepo, imbridgeAgentAdapter, imBridgeServiceUserID, log)
 	imbridgeHandler := managerserverimbridge.NewHandler(imbridgeSvc, aiops.imbridgeRepo, aiops.imbridgeUC, log)
+	imbridgeHandler.SetWeComHub(aiops.imbridgeWeComHub)
 
 	// Stream supervisor: long-connection mode. Runs one
 	// goroutine per (enabled, stream-mode) ImApp; reconciles every
@@ -56,6 +58,11 @@ func bootstrapIMBridge(rootCtx context.Context, log *slog.Logger, storage *stora
 	// enforced in the provider so a misconfigured open workspace can't
 	// turn the agent into an LLM toy for random members.
 	imbridgeStreamSupervisor.RegisterFactory("slack", managerbizimbridgeslack.NewStreamFactory(log))
+	// WeCom AI bots are stream-only via the bot long connection (outbound
+	// WebSocket, no public callback URL). The hub exposes each live
+	// connection to send_im_message, because WeCom allows only one
+	// connection per bot.
+	imbridgeStreamSupervisor.RegisterFactory("wecom", managerbizimbridgewecom.NewStreamFactory(log, aiops.imbridgeWeComHub))
 	go imbridgeStreamSupervisor.Run(rootCtx)
 
 	// @-mention search backend (HLD: ChatInput @-popover). The shared runtime

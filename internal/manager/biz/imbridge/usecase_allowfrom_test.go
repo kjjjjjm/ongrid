@@ -107,3 +107,45 @@ func TestValidateSlackRequiresAllowFrom(t *testing.T) {
 		t.Error("slack webhook mode should be rejected")
 	}
 }
+
+// WeCom bots only reach members of the enterprise, so allow_from is optional;
+// when present it is canonicalized like the other providers'. The bot long
+// connection is the only supported mode.
+func TestValidateWeCom(t *testing.T) {
+	base := AppInput{Provider: "wecom", Mode: "stream", Name: "ops", AppID: "aib-1", AppSecret: "secret"}
+
+	in := base
+	if err := in.validate(); err != nil {
+		t.Fatalf("wecom without allow_from should pass: %v", err)
+	}
+	if in.AllowFrom != "" {
+		t.Fatalf("empty allow_from canonicalized to %q", in.AllowFrom)
+	}
+
+	in = base
+	in.AllowFrom = " zhangsan;lisi\nzhangsan "
+	if err := in.validate(); err != nil {
+		t.Fatalf("wecom with allow_from should pass: %v", err)
+	}
+	if in.AllowFrom != "zhangsan,lisi" {
+		t.Fatalf("allow_from canonicalize: got %q", in.AllowFrom)
+	}
+
+	in = base
+	in.Mode = "webhook"
+	in.EncryptKey = "key"
+	if err := in.validate(); err == nil {
+		t.Fatal("wecom webhook mode should be rejected")
+	}
+
+	// Factories and inbound lookups match the provider exactly, so the stored
+	// form must be canonical.
+	in = base
+	in.Provider = " WeCom "
+	if err := in.validate(); err != nil {
+		t.Fatalf("provider match should be case-insensitive: %v", err)
+	}
+	if in.Provider != "wecom" {
+		t.Fatalf("provider stored as %q, want wecom", in.Provider)
+	}
+}

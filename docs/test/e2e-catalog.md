@@ -120,6 +120,8 @@
 | H7 | /new 命令切新 session | 发 /new | `im_threads.ongrid_session_id` 换、新 session | P2 | |
 | H8 | Slack 频道 invite 才收 @ | 不 invite → @ → 收不到 | (人工动作) | P2 | |
 | H9 | ImApp disable 后 stream 拆 | 改 enabled=false | 30s 内 close stream | P1 | |
+| H10 | WeCom 长连接订阅 + 心跳 | 新建 enabled=true wecom app | 订阅成功后状态运行中；心跳无回执、被新连接踢下线时退出并重连 | P1 | 单测 `internal/manager/biz/imbridge/provider/wecom/stream_test.go`（fake 长连接服务） |
+| H11 | WeCom @bot → agent 流式回复 | 群里 @bot 一条 | aibot_msg_callback → bridge → 同一 stream.id 刷新，最后 finish=true | P1 | 同上 |
 
 ## 域 I — Chat / Agent / AIOps
 

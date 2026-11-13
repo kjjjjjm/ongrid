@@ -15,6 +15,7 @@ import (
 	aiopstools "github.com/ongridio/ongrid/internal/manager/biz/aiops/tools"
 	managerbizalert "github.com/ongridio/ongrid/internal/manager/biz/alert"
 	managerbizimbridge "github.com/ongridio/ongrid/internal/manager/biz/imbridge"
+	managerbizimbridgewecom "github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/wecom"
 	managerbizpacketcapture "github.com/ongridio/ongrid/internal/manager/biz/packetcapture"
 	manageraiopsdata "github.com/ongridio/ongrid/internal/manager/data/aiops/store"
 	managerimbridgedata "github.com/ongridio/ongrid/internal/manager/data/imbridge/store"
@@ -32,6 +33,10 @@ type aiopsModule struct {
 	imbridgeRepo         *managerimbridgedata.Repo
 	imbridgeUC           *managerbizimbridge.UC
 	imbridgeStreamHealth *managerbizimbridge.StreamHealthStore
+	// imbridgeWeComHub tracks live WeCom long connections: the stream
+	// factory registers them, the send_im_message tool and the credentials
+	// test read them.
+	imbridgeWeComHub     *managerbizimbridgewecom.Hub
 	aiopsRepo            *manageraiopsdata.SessionRepo
 	operationUC          *managerbizaiops.OperationUsecase
 	mutatingProposalRepo *manageraiopsdata.MutatingProposalRepo
@@ -68,6 +73,7 @@ func bootstrapAIOps(cfg *config.Config, log *slog.Logger, notifyRouter *notify.R
 	// admin API reads it through the UC (Settings → Channels).
 	imbridgeStreamHealth := managerbizimbridge.NewStreamHealthStore()
 	imbridgeUC := managerbizimbridge.NewUC(imbridgeRepo, imbridgeStreamHealth)
+	imbridgeWeComHub := managerbizimbridgewecom.NewHub()
 
 	// manager/aiops biz + service + server.
 	//
@@ -207,6 +213,7 @@ func bootstrapAIOps(cfg *config.Config, log *slog.Logger, notifyRouter *notify.R
 		imbridgeRepo:         imbridgeRepo,
 		imbridgeUC:           imbridgeUC,
 		imbridgeStreamHealth: imbridgeStreamHealth,
+		imbridgeWeComHub:     imbridgeWeComHub,
 		aiopsRepo:            aiopsRepo,
 		operationUC:          operationUC,
 		mutatingProposalRepo: mutatingProposalRepo,

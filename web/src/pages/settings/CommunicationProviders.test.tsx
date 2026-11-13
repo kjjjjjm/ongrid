@@ -2,7 +2,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SettingsChannels from './Channels';
 import SettingsNotifications from './Notifications';
@@ -76,6 +76,58 @@ describe('communication provider settings', () => {
     const dialog = await screen.findByRole('dialog', { name: '新建Slack机器人' });
     expect(dialog).toHaveTextContent('平台Slack');
     expect(within(dialog).queryByRole('combobox', { name: '平台' })).not.toBeInTheDocument();
+  });
+
+  it('creates a WeCom bot as a stream-only app with an optional allowlist', async () => {
+    let created: Record<string, unknown> | null = null;
+    server.use(
+      http.get('/api/v1/im/apps', () => HttpResponse.json({ items: [], total: 0 })),
+      http.post('/api/v1/im/apps', async ({ request }) => {
+        created = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 9, ...created, has_secret: true, idle_timeout_seconds: 0, created_at: now, updated_at: now });
+      }),
+    );
+
+    render(<MemoryRouter><SettingsChannels /></MemoryRouter>);
+    const addButton = await screen.findByText('添加 IM 平台');
+    const user = userEvent.setup();
+    await act(async () => {
+      await user.click(addButton);
+      await user.click(within(screen.getByTestId('im-provider-picker')).getByRole('button', { name: /企业微信/ }));
+    });
+
+    const dialog = await screen.findByRole('dialog', { name: '新建企业微信机器人' });
+    expect(dialog).toHaveTextContent('平台企业微信');
+    expect(dialog).toHaveTextContent('BotID');
+    expect(dialog).toHaveTextContent('可选。逗号分隔的企业微信 userid');
+
+    await act(async () => {
+      await user.click(within(dialog).getByRole('combobox', { name: '模式' }));
+    });
+    expect(screen.getByRole('option', { name: 'stream（推荐）' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'webhook' })).not.toBeInTheDocument();
+    await act(async () => {
+      await user.keyboard('{Escape}');
+    });
+
+    await act(async () => {
+      await user.type(within(dialog).getByPlaceholderText('如：运维群机器人'), '运维助手');
+      await user.type(within(dialog).getByPlaceholderText('BotID'), 'aib-ops');
+      await user.type(within(dialog).getByPlaceholderText('必填'), 'long-conn-secret');
+      await user.type(within(dialog).getByPlaceholderText('zhangsan, lisi'), 'zhangsan,lisi');
+      await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    });
+
+    await vi.waitFor(() => expect(created).not.toBeNull());
+    expect(created).toMatchObject({
+      provider: 'wecom',
+      mode: 'stream',
+      name: '运维助手',
+      app_id: 'aib-ops',
+      app_secret: 'long-conn-secret',
+      allow_from: 'zhangsan,lisi',
+      enabled: true,
+    });
   });
 
   it('shows the stream state the manager reports, and stays silent when it has none', async () => {

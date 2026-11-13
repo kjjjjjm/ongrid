@@ -22,6 +22,7 @@ import (
 	"github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/feishu"
 	"github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/slack"
 	"github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/telegram"
+	"github.com/ongridio/ongrid/internal/manager/biz/imbridge/provider/wecom"
 	model "github.com/ongridio/ongrid/internal/manager/model/imbridge"
 	"github.com/ongridio/ongrid/internal/pkg/errs"
 	"github.com/ongridio/ongrid/internal/pkg/tenantctx"
@@ -52,10 +53,11 @@ type AppRepo interface {
 }
 
 type Handler struct {
-	bridge *bizbridge.Bridge
-	apps   AppRepo
-	uc     *bizbridge.UC
-	log    *slog.Logger
+	bridge   *bizbridge.Bridge
+	apps     AppRepo
+	uc       *bizbridge.UC
+	wecomHub *wecom.Hub // nil: every WeCom test runs a real probe
+	log      *slog.Logger
 }
 
 func NewHandler(bridge *bizbridge.Bridge, apps AppRepo, uc *bizbridge.UC, log *slog.Logger) *Handler {
@@ -63,6 +65,13 @@ func NewHandler(bridge *bizbridge.Bridge, apps AppRepo, uc *bizbridge.UC, log *s
 		log = slog.Default()
 	}
 	return &Handler{bridge: bridge, apps: apps, uc: uc, log: log.With(slog.String("comp", "imbridge.http"))}
+}
+
+// SetWeComHub lets the credentials test recognize WeCom bots that are already
+// connected. Without it, testing a connected bot evicts its live connection
+// for a moment, because WeCom allows one connection per bot.
+func (h *Handler) SetWeComHub(hub *wecom.Hub) {
+	h.wecomHub = hub
 }
 
 // RegisterPublic adds /v1/im/{provider}/events to the unauthenticated
@@ -505,6 +514,16 @@ func (h *Handler) testApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if h.liveWeComConnection(app) {
+		// A WeCom bot keeps one long connection; probing would subscribe a
+		// second one and evict the client that is serving users. The running
+		// client already authenticated with these saved credentials.
+		writeJSON(w, http.StatusOK, appTestResult{
+			Accepted: true,
+			Message:  "long connection is running with the saved credentials",
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -514,6 +533,12 @@ func (h *Handler) testApp(w http.ResponseWriter, r *http.Request) {
 		out.Message = err.Error()
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// liveWeComConnection reports whether a WeCom client is connected with the
+// app's saved credentials.
+func (h *Handler) liveWeComConnection(app *model.ImApp) bool {
+	return app.Provider == model.ProviderWeCom && h.wecomHub.Connected(app.ID, app.AppID, app.AppSecret)
 }
 
 func probeApp(ctx context.Context, app *model.ImApp) error {
@@ -533,6 +558,8 @@ func probeApp(ctx context.Context, app *model.ImApp) error {
 			return err
 		}
 		return client.Probe(ctx)
+	case model.ProviderWeCom:
+		return wecom.Probe(ctx, app.AppID, app.AppSecret)
 	default:
 		return fmt.Errorf("%w: unsupported IM provider %q", errs.ErrInvalid, app.Provider)
 	}

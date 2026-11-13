@@ -47,7 +47,7 @@ type AppInput struct {
 	AppSecret     string
 	VerifyToken   string
 	EncryptKey    string
-	AllowFrom     string // Telegram / Slack sender allowlist; see ParseAllowFrom
+	AllowFrom     string // Telegram / Slack (required) or WeCom (optional) sender allowlist; see ParseAllowFrom
 	Enabled       bool
 	DefaultLocale string // "" | "en" | "zh" — see model.ImApp.DefaultLocale
 }
@@ -93,10 +93,13 @@ func isNumericID(s string) bool {
 func (in *AppInput) validate() error {
 	provider := strings.ToLower(strings.TrimSpace(in.Provider))
 	switch provider {
-	case model.ProviderFeishu, model.ProviderDingTalk, model.ProviderTelegram, model.ProviderSlack:
+	case model.ProviderFeishu, model.ProviderDingTalk, model.ProviderTelegram, model.ProviderSlack, model.ProviderWeCom:
 	default:
-		return fmt.Errorf("%w: provider must be feishu, dingtalk, telegram, or slack", errs.ErrInvalid)
+		return fmt.Errorf("%w: provider must be feishu, dingtalk, telegram, slack, or wecom", errs.ErrInvalid)
 	}
+	// Store the canonical form: stream factories and inbound lookups match the
+	// provider exactly, so a row saved as "WeCom" would never connect.
+	in.Provider = provider
 	// Normalize + whitelist default_locale. Empty = no directive
 	// (LLM mirrors the user) — the legacy / "auto" mode. Anything outside
 	// {en, zh} is rejected so a typo'd "EN-us" doesn't silently degrade
@@ -183,6 +186,17 @@ func (in *AppInput) validate() error {
 			return fmt.Errorf("%w: slack requires allow_from — at least one Slack user ID (e.g. UABC123, find via Profile → ⋯ → Copy member ID). Without it any workspace member could command a tool-equipped agent", errs.ErrInvalid)
 		}
 		in.AllowFrom = strings.Join(ids, ",") // canonicalize stored form
+	}
+	// WeCom: the AI-bot long connection is the only supported mode. The
+	// callback-URL mode needs a public endpoint plus message encryption, and
+	// WeCom turns off the long connection while a bot is in that mode. Like
+	// Feishu/DingTalk the bot is limited to enterprise members, so allow_from
+	// is optional; when set it holds WeCom userids.
+	if provider == model.ProviderWeCom {
+		if mode != model.ModeStream {
+			return fmt.Errorf("%w: wecom only supports stream mode (AI bot long connection)", errs.ErrInvalid)
+		}
+		in.AllowFrom = strings.Join(ParseAllowFrom(in.AllowFrom), ",") // canonicalize stored form
 	}
 	return nil
 }
