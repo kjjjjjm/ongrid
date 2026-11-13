@@ -25,6 +25,9 @@ type RetryWorkerOpts struct {
 	Tick              time.Duration
 	Log               *slog.Logger
 	Now               func() time.Time
+	// DeviceIdentityResolver fills in the device hostname / IP the first
+	// attempt showed. Optional.
+	DeviceIdentityResolver DeviceIdentityResolver
 }
 
 // RetryWorker drains failed notification_deliveries, re-runs the underlying
@@ -40,6 +43,7 @@ type RetryWorker struct {
 	tick              time.Duration
 	log               *slog.Logger
 	now               func() time.Time
+	deviceIdentity    DeviceIdentityResolver
 }
 
 // NewRetryWorker builds the worker with sensible defaults applied.
@@ -69,6 +73,7 @@ func NewRetryWorker(opts RetryWorkerOpts) *RetryWorker {
 		tick:              opts.Tick,
 		log:               opts.Log,
 		now:               opts.Now,
+		deviceIdentity:    opts.DeviceIdentityResolver,
 	}
 }
 
@@ -111,8 +116,11 @@ func (w *RetryWorker) runOnce(ctx context.Context) {
 //  1. Resolve incident + channel rows.
 //  2. If the incident is already resolved, mark the delivery success
 //     (operator no longer needs the notify).
-//  3. Otherwise rebuild the notify.Message from the incident state and
-//     re-call notifier.Send for the channel name.
+//  3. Otherwise rebuild the notify.Message from the incident state, apply
+//     the channel's template, and send it through a sender built from the
+//     channel row — the same path as the first attempt. (Sending by name
+//     only reached channels from the env config, so retries of channels
+//     created in the UI always failed.)
 //  4. Update the delivery with attempt_count++ and the new outcome.
 func (w *RetryWorker) retryOne(ctx context.Context, d *model.Delivery, now time.Time) {
 	if d == nil || d.IncidentID == nil {
@@ -159,9 +167,26 @@ func (w *RetryWorker) retryOne(ctx context.Context, d *model.Delivery, now time.
 	}
 
 	msg := buildIncidentMessage(incident, now)
+	applyDeviceIdentity(ctx, &msg, incident.DeviceID, w.deviceIdentity, w.log)
+	publicURL := ""
+	if w.uc != nil {
+		publicURL = w.uc.PublicURL()
+	}
+	msg, templateErr := renderChannelMessage(channel, msg, incident, publicURL)
+	if templateErr != nil {
+		w.log.Warn("retry: notification template failed; sending the default format",
+			slog.Uint64("delivery_id", d.ID),
+			slog.String("channel", channel.Name),
+			slog.Any("err", templateErr))
+	}
 	sentAt := now
 	finished := now
-	sendErr := w.notifier.Send(ctx, msg, channel.Name)
+	var sendErr error
+	if sender, berr := BuildSenderFromChannel(channel); berr != nil {
+		sendErr = berr
+	} else {
+		sendErr = w.notifier.SendVia(ctx, msg, sender)
+	}
 	status := model.DeliveryStatusSuccess
 	var errMsg *string
 	eventType := model.EventTypeNotificationSent
@@ -174,11 +199,12 @@ func (w *RetryWorker) retryOne(ctx context.Context, d *model.Delivery, now time.
 	if err := w.repo.UpdateDeliveryStatus(ctx, d.ID, status, d.AttemptCount+1, nil, nil, errMsg, &sentAt, &finished); err != nil {
 		w.log.Warn("retry: update delivery failed", slog.Uint64("delivery_id", d.ID), slog.Any("err", err))
 	}
-	reason := channel.Name
+	label := deliveryLabel(channel.Name, templateErr)
+	var reason string
 	if sendErr != nil {
-		reason = fmt.Sprintf("%s: retry attempt %d: %s", channel.Name, d.AttemptCount+1, sendErr.Error())
+		reason = fmt.Sprintf("%s: retry attempt %d: %s", label, d.AttemptCount+1, sendErr.Error())
 	} else {
-		reason = fmt.Sprintf("%s: retry attempt %d", channel.Name, d.AttemptCount+1)
+		reason = fmt.Sprintf("%s: retry attempt %d", label, d.AttemptCount+1)
 	}
 	if err := w.repo.CreateEvent(ctx, &model.Event{
 		IncidentID:  *d.IncidentID,

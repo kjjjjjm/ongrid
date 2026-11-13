@@ -465,12 +465,19 @@ export function previewRule(input: RuleInput, lookbackSeconds = 86400) {
 
 // ---- Channels ----
 
+/** '' = text (the built-in default); 'markdown' is offered for WeCom / DingTalk / Feishu. */
+export type ChannelMessageFormat = '' | 'text' | 'markdown';
+
 export type Channel = {
   id: number;
   name: string;
   type: string;
   enabled: boolean;
   endpoint?: string;
+  /** Notification template (Go text/template). All empty = built-in format. */
+  format?: ChannelMessageFormat;
+  title_template?: string;
+  content_template?: string;
   created_at: string;
   updated_at: string;
 };
@@ -484,7 +491,37 @@ export type ChannelInput = {
   /** Optional secret. Empty string means "preserve existing"; "-" clears. */
   secret?: string;
   enabled: boolean;
+  /** Template fields: omitted = keep the stored value; '' = clear. */
+  format?: ChannelMessageFormat;
+  title_template?: string;
+  content_template?: string;
 };
+
+export type ChannelTemplateInput = {
+  type: string;
+  format?: ChannelMessageFormat;
+  title_template?: string;
+  content_template?: string;
+};
+
+export type ChannelTemplatePreview = {
+  title: string;
+  content?: string;
+  format: 'text' | 'markdown';
+  /** True when no content template applies and the platform's built-in layout is sent. */
+  default_layout: boolean;
+};
+
+/** Renders a template against a sample alert. Nothing is saved or sent. */
+export function previewChannelTemplate(input: ChannelTemplateInput) {
+  return request<ChannelTemplatePreview>('POST', '/notification-channels/preview', input);
+}
+
+/** An editable example content template for a channel type and format. */
+export function getChannelTemplateStarter(type: string, format: ChannelMessageFormat) {
+  const qs = new URLSearchParams({ type, format: format || 'text' });
+  return request<{ content_template: string }>('GET', `/notification-channels/template-starter?${qs.toString()}`);
+}
 
 export type ChannelTestResult = {
   accepted: boolean;

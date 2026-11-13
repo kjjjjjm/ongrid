@@ -3,6 +3,7 @@ package alert
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -356,7 +357,18 @@ type Channel struct {
 	MatchSeverityMin string `gorm:"column:match_severity_min;size:16;not null;default:''"`
 	// MatchScopeTypes is a comma-separated allowlist of scope_type values
 	// (e.g. "host" or "host,monitoring_pipeline"). Empty matches any.
-	MatchScopeTypes string         `gorm:"column:match_scope_types;size:128;not null;default:''"`
+	MatchScopeTypes string `gorm:"column:match_scope_types;size:128;not null;default:''"`
+	// Optional notification template (Go text/template) applied to alert
+	// notifications sent through this channel. TitleTemplate replaces the
+	// default title; ContentTemplate replaces the platform's default layout
+	// (for webhook channels: the whole JSON body). MessageFormat is "" (text)
+	// or "markdown" for WeCom / DingTalk / Feishu. All empty = built-in
+	// format. Kept out of config_json, which env seeding rewrites on boot.
+	// The text columns are nullable so rolling deploys and MySQL (no TEXT
+	// defaults) both work.
+	TitleTemplate   *string        `gorm:"column:title_template;type:text"`
+	ContentTemplate *string        `gorm:"column:content_template;type:text"`
+	MessageFormat   string         `gorm:"column:message_format;size:16;not null;default:''"`
 	CreatedBy       *uint64        `gorm:"column:created_by"`
 	CreatedAt       time.Time      `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt       time.Time      `gorm:"column:updated_at;autoUpdateTime"`
@@ -364,6 +376,27 @@ type Channel struct {
 }
 
 func (Channel) TableName() string { return "notification_channels" }
+
+// TitleTemplateText returns the title template, or "" when none is set.
+func (c Channel) TitleTemplateText() string { return derefString(c.TitleTemplate) }
+
+// ContentTemplateText returns the content template, or "" when none is set.
+func (c Channel) ContentTemplateText() string { return derefString(c.ContentTemplate) }
+
+// HasTemplate reports whether alert notifications through this channel are
+// customized: a title or content template, or the Markdown format.
+func (c Channel) HasTemplate() bool {
+	return strings.TrimSpace(c.TitleTemplateText()) != "" ||
+		strings.TrimSpace(c.ContentTemplateText()) != "" ||
+		c.MessageFormat != ""
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
 
 type Delivery struct {
 	ID                uint64         `gorm:"column:id;primaryKey;autoIncrement"`

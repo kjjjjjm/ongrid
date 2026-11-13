@@ -41,6 +41,8 @@ func bootstrapAlerts(rootCtx context.Context, cfg *config.Config, log *slog.Logg
 	// pipeline-health rules on the same usecase.
 	alertRepo := manageralertdata.NewRepo(storage.db)
 	alertUC := managerbizalert.NewUsecase(alertRepo, log.With(slog.String("comp", "alert")))
+	// Notification templates link to the incident page via {{.IncidentURL}}.
+	alertUC.SetPublicURL(cfg.PublicURL)
 	if err := manageralertdata.SeedChannelsFromConfig(rootCtx, alertRepo, cfg.Notification); err != nil {
 		log.Warn("seed notification channels", slog.Any("err", err))
 	}

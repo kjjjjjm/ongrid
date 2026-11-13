@@ -8,12 +8,24 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// WeCom group bots reject longer content, in UTF-8 bytes.
+const (
+	wecomTextMaxBytes     = 2048
+	wecomMarkdownMaxBytes = 4096
+)
+
+// maxResponseBytes bounds how much of a bot's reply is read for its errcode.
+const maxResponseBytes = 64 << 10
 
 type webhookSender struct {
 	name       string
@@ -22,12 +34,23 @@ type webhookSender struct {
 	client     *http.Client
 	buildBody  func(Message) (any, error)
 	signTarget func(endpoint, secret string, body []byte) (string, map[string]string, error)
+	// checkResponse inspects a 2xx response body. IM bots report most
+	// failures (bad signature, content too long, unknown key) as HTTP 200
+	// with a non-zero code in the JSON body.
+	checkResponse func(body []byte) error
 }
 
 // NewGenericWebhookSender posts the normalized Message JSON. When secret is
-// configured it adds an HMAC signature header over the request body.
+// configured it adds an HMAC signature header over the request body. A
+// message rendered from a template replaces the body with the rendered JSON.
 func NewGenericWebhookSender(name, endpoint, secret string, client *http.Client) Sender {
 	return newWebhookSender(name, endpoint, secret, client, func(msg Message) (any, error) {
+		if msg.Rendered != nil && msg.Rendered.Content != "" {
+			if !json.Valid([]byte(msg.Rendered.Content)) {
+				return nil, errors.New("rendered webhook body is not valid JSON")
+			}
+			return json.RawMessage(msg.Rendered.Content), nil
+		}
 		return msg, nil
 	}, signGenericWebhook)
 }
@@ -64,6 +87,16 @@ func formatSlack(msg Message) map[string]any {
 		"color":    slackColor(msg.Severity),
 		"fallback": summary,
 		"title":    nonEmpty(msg.Subject, sevUpper),
+	}
+	if msg.Rendered != nil {
+		// A template owns the body: its mrkdwn replaces the default fields.
+		att["text"] = msg.Rendered.Content
+		att["mrkdwn_in"] = []string{"text"}
+		att["footer"] = "ongrid"
+		if !msg.OccurredAt.IsZero() {
+			att["ts"] = msg.OccurredAt.Unix()
+		}
+		return map[string]any{"text": summary, "attachments": []any{att}}
 	}
 	if msg.Body != "" {
 		att["text"] = msg.Body
@@ -138,13 +171,12 @@ func nonEmpty(v, fallback string) string {
 	return fallback
 }
 
-// NewFeishuSender posts a text payload compatible with Feishu/Lark custom bots.
+// NewFeishuSender posts to Feishu/Lark custom bots: a text message by
+// default, or an interactive card (severity-colored header + markdown body)
+// for Markdown-rendered messages.
 func NewFeishuSender(name, endpoint, secret string, client *http.Client) Sender {
-	return newWebhookSender(name, endpoint, secret, client, func(msg Message) (any, error) {
-		payload := map[string]any{
-			"msg_type": "text",
-			"content":  map[string]string{"text": formatText(msg)},
-		}
+	s := newWebhookSender(name, endpoint, secret, client, func(msg Message) (any, error) {
+		payload := feishuPayload(msg)
 		if secret != "" {
 			ts := fmt.Sprintf("%d", time.Now().Unix())
 			payload["timestamp"] = ts
@@ -152,29 +184,91 @@ func NewFeishuSender(name, endpoint, secret string, client *http.Client) Sender 
 		}
 		return payload, nil
 	}, nil)
+	s.checkResponse = checkFeishuResponse
+	return s
 }
 
-// NewDingTalkSender posts a text payload compatible with DingTalk custom bots.
+func feishuPayload(msg Message) map[string]any {
+	if msg.Rendered == nil {
+		return map[string]any{"msg_type": "text", "content": map[string]string{"text": formatText(msg)}}
+	}
+	if msg.Rendered.Format != FormatMarkdown {
+		return map[string]any{"msg_type": "text", "content": map[string]string{"text": msg.Rendered.Content}}
+	}
+	return map[string]any{
+		"msg_type": "interactive",
+		"card": map[string]any{
+			"config": map[string]any{"wide_screen_mode": true},
+			"header": map[string]any{
+				"title":    map[string]string{"tag": "plain_text", "content": nonEmpty(msg.Subject, "ongrid")},
+				"template": feishuHeaderColor(msg.Severity),
+			},
+			"elements": []any{map[string]string{"tag": "markdown", "content": msg.Rendered.Content}},
+		},
+	}
+}
+
+// feishuHeaderColor maps severity onto a Feishu card header template.
+func feishuHeaderColor(sev Severity) string {
+	switch sev {
+	case SeverityCritical:
+		return "red"
+	case SeverityWarning:
+		return "orange"
+	case SeverityInfo:
+		return "blue"
+	default:
+		return "grey"
+	}
+}
+
+// NewDingTalkSender posts to DingTalk custom bots: a text message by default,
+// or a markdown message (Subject as the notification title) for
+// Markdown-rendered messages.
 func NewDingTalkSender(name, endpoint, secret string, client *http.Client) Sender {
-	return newWebhookSender(name, endpoint, secret, client, func(msg Message) (any, error) {
-		return map[string]any{
-			"msgtype": "text",
-			"text":    map[string]string{"content": formatText(msg)},
-		}, nil
+	s := newWebhookSender(name, endpoint, secret, client, func(msg Message) (any, error) {
+		switch {
+		case msg.Rendered == nil:
+			return map[string]any{"msgtype": "text", "text": map[string]string{"content": formatText(msg)}}, nil
+		case msg.Rendered.Format == FormatMarkdown:
+			return map[string]any{
+				"msgtype":  "markdown",
+				"markdown": map[string]string{"title": nonEmpty(msg.Subject, "ongrid"), "text": msg.Rendered.Content},
+			}, nil
+		default:
+			return map[string]any{"msgtype": "text", "text": map[string]string{"content": msg.Rendered.Content}}, nil
+		}
 	}, signDingTalkURL)
+	s.checkResponse = checkErrcodeResponse
+	return s
 }
 
 // NewWeComSender posts a text payload compatible with 企业微信 (WeCom) group
 // bots. Endpoint URL carries the bot key as a query param; the v1 wiring
 // has no extra signing — the secret query string IS the credential. Same
 // JSON shape as DingTalk: {"msgtype":"text","text":{"content":"..."}}.
+// Markdown-rendered messages use {"msgtype":"markdown"}. Content is cut to
+// WeCom's limits (2048 bytes of text, 4096 bytes of markdown) because the bot
+// rejects anything longer.
 func NewWeComSender(name, endpoint string, client *http.Client) Sender {
-	return newWebhookSender(name, endpoint, "", client, func(msg Message) (any, error) {
+	s := newWebhookSender(name, endpoint, "", client, func(msg Message) (any, error) {
+		if msg.Rendered != nil && msg.Rendered.Format == FormatMarkdown {
+			return map[string]any{
+				"msgtype":  "markdown",
+				"markdown": map[string]string{"content": truncateUTF8(msg.Rendered.Content, wecomMarkdownMaxBytes)},
+			}, nil
+		}
+		content := formatText(msg)
+		if msg.Rendered != nil {
+			content = msg.Rendered.Content
+		}
 		return map[string]any{
 			"msgtype": "text",
-			"text":    map[string]string{"content": formatText(msg)},
+			"text":    map[string]string{"content": truncateUTF8(content, wecomTextMaxBytes)},
 		}, nil
 	}, nil)
+	s.checkResponse = checkErrcodeResponse
+	return s
 }
 
 // NewTelegramSender posts to the Telegram Bot API sendMessage endpoint.
@@ -184,9 +278,13 @@ func NewWeComSender(name, endpoint string, client *http.Client) Sender {
 // the URL, chat_id in the body — so it doesn't use the secret/signing path.
 func NewTelegramSender(name, endpoint, chatID string, client *http.Client) Sender {
 	return newWebhookSender(name, endpoint, "", client, func(msg Message) (any, error) {
+		text := formatText(msg)
+		if msg.Rendered != nil {
+			text = msg.Rendered.Content
+		}
 		return map[string]any{
 			"chat_id": chatID,
-			"text":    formatText(msg),
+			"text":    text,
 		}, nil
 	}, nil)
 }
@@ -198,7 +296,7 @@ func newWebhookSender(
 	client *http.Client,
 	buildBody func(Message) (any, error),
 	signTarget func(endpoint, secret string, body []byte) (string, map[string]string, error),
-) Sender {
+) *webhookSender {
 	if name == "" {
 		name = "webhook"
 	}
@@ -254,7 +352,54 @@ func (s *webhookSender) Send(ctx context.Context, msg Message) error {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("unexpected status: %s", resp.Status)
 	}
-	return nil
+	if s.checkResponse == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	return s.checkResponse(raw)
+}
+
+// checkErrcodeResponse reads the {"errcode":N,"errmsg":"..."} reply of WeCom
+// and DingTalk bots. A body without errcode (a proxy page, an older bot)
+// counts as success; the HTTP status already did.
+func checkErrcodeResponse(body []byte) error {
+	var r struct {
+		ErrCode *int   `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if json.Unmarshal(body, &r) != nil || r.ErrCode == nil || *r.ErrCode == 0 {
+		return nil
+	}
+	return fmt.Errorf("bot rejected the message: errcode=%d errmsg=%s", *r.ErrCode, r.ErrMsg)
+}
+
+// checkFeishuResponse reads the {"code":N,"msg":"..."} reply of Feishu bots.
+func checkFeishuResponse(body []byte) error {
+	var r struct {
+		Code *int   `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(body, &r) != nil || r.Code == nil || *r.Code == 0 {
+		return nil
+	}
+	return fmt.Errorf("bot rejected the message: code=%d msg=%s", *r.Code, r.Msg)
+}
+
+// truncateUTF8 cuts s to at most max bytes without splitting a rune, marking
+// the cut with "…".
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	const marker = "…"
+	cut := max - len(marker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + marker
 }
 
 func formatText(msg Message) string {

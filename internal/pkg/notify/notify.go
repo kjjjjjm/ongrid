@@ -28,7 +28,33 @@ type Message struct {
 	DedupeKey  string            `json:"dedupe_key,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
 	OccurredAt time.Time         `json:"occurred_at"`
+	// Rendered is the output of a channel's notification template. When set,
+	// senders build their payload from it instead of their built-in layout;
+	// Subject stays the title wherever the platform has a title slot. It is
+	// never part of the generic webhook's default JSON body.
+	Rendered *Rendered `json:"-"`
 }
+
+// Format selects how rendered content is sent on IM bots that support both
+// plain text and Markdown (WeCom, DingTalk, Feishu).
+type Format string
+
+const (
+	FormatText     Format = "text"
+	FormatMarkdown Format = "markdown"
+)
+
+// Rendered is a message body produced by a notification template.
+type Rendered struct {
+	// Content is the complete message body. For the generic webhook it is
+	// the raw JSON request body.
+	Content string
+	Format  Format
+}
+
+// PlainText returns the built-in text layout the IM bot senders use when a
+// message has no rendered content.
+func PlainText(msg Message) string { return formatText(msg) }
 
 // Sender is one outbound notification channel.
 type Sender interface {
