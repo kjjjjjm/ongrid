@@ -440,26 +440,7 @@ func (e *PipelineEvaluator) notify(ctx context.Context, res *FiringResult, summa
 			}
 		}
 	}
-	if res.Incident.DeviceID != nil {
-		deviceID := *res.Incident.DeviceID
-		msg.Labels["device_id"] = fmt.Sprintf("%d", deviceID)
-		if e.deviceIdentity != nil {
-			identity, err := e.deviceIdentity(ctx, deviceID)
-			if err != nil {
-				e.log.Warn("alert: resolve device identity for notification failed",
-					slog.Uint64("device_id", deviceID), slog.Any("err", err))
-			} else if display := deviceDisplay(identity); display != "" {
-				msg.Subject = strings.ReplaceAll(msg.Subject,
-					fmt.Sprintf("device_id=%d", deviceID), "device="+display)
-				if identity.Hostname != "" {
-					msg.Labels["device_hostname"] = identity.Hostname
-				}
-				if identity.IPAddress != "" {
-					msg.Labels["device_ip"] = identity.IPAddress
-				}
-			}
-		}
-	}
+	applyDeviceIdentity(ctx, &msg, res.Incident.DeviceID, e.deviceIdentity, e.log)
 	if msg.Severity == "" {
 		msg.Severity = notify.SeverityWarning
 	}
@@ -476,6 +457,42 @@ func (e *PipelineEvaluator) notify(ctx context.Context, res *FiringResult, summa
 	// usecase.go:51) — fires only on the isNew transition so reopens /
 	// follow-up notifies don't re-trigger. Pipeline doesn't need its
 	// own hook.
+}
+
+// applyDeviceIdentity tags msg with the incident's device and, when resolve
+// is set, swaps "device_id=N" in the subject for the hostname and IP and adds
+// the device_hostname / device_ip labels. Resolution is best-effort.
+func applyDeviceIdentity(ctx context.Context, msg *notify.Message, deviceID *uint64, resolve DeviceIdentityResolver, log *slog.Logger) {
+	if deviceID == nil {
+		return
+	}
+	id := *deviceID
+	if msg.Labels == nil {
+		msg.Labels = map[string]string{}
+	}
+	msg.Labels["device_id"] = fmt.Sprintf("%d", id)
+	if resolve == nil {
+		return
+	}
+	identity, err := resolve(ctx, id)
+	if err != nil {
+		if log != nil {
+			log.Warn("alert: resolve device identity for notification failed",
+				slog.Uint64("device_id", id), slog.Any("err", err))
+		}
+		return
+	}
+	display := deviceDisplay(identity)
+	if display == "" {
+		return
+	}
+	msg.Subject = strings.ReplaceAll(msg.Subject, fmt.Sprintf("device_id=%d", id), "device="+display)
+	if identity.Hostname != "" {
+		msg.Labels["device_hostname"] = identity.Hostname
+	}
+	if identity.IPAddress != "" {
+		msg.Labels["device_ip"] = identity.IPAddress
+	}
 }
 
 func deviceDisplay(identity DeviceIdentity) string {

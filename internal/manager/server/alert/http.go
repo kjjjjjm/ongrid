@@ -43,6 +43,8 @@ type ChannelService interface {
 	UpdateChannel(ctx context.Context, caller svc.Caller, id uint64, in svc.ChannelInput) (*svc.Channel, error)
 	DeleteChannel(ctx context.Context, caller svc.Caller, id uint64) error
 	TestChannel(ctx context.Context, caller svc.Caller, id uint64) (*svc.ChannelTestResult, error)
+	PreviewChannelTemplate(ctx context.Context, caller svc.Caller, in svc.ChannelTemplateInput) (*svc.ChannelTemplatePreview, error)
+	ChannelTemplateStarter(ctx context.Context, caller svc.Caller, channelType, format string) (*svc.ChannelTemplateStarter, error)
 }
 
 type RuleService interface {
@@ -163,6 +165,8 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/alerts/runtime-info", h.getRuntimeInfo)
 
 	r.Get("/v1/notification-channels", h.listChannels)
+	r.Get("/v1/notification-channels/template-starter", h.channelTemplateStarter)
+	r.Post("/v1/notification-channels/preview", h.previewChannelTemplate)
 	r.Get("/v1/notification-channels/{id}", h.getChannel)
 	r.Post("/v1/notification-channels", h.createChannel)
 	r.Put("/v1/notification-channels/{id}", h.updateChannel)
@@ -244,6 +248,30 @@ type channelReq struct {
 	Endpoint string `json:"endpoint"`
 	Secret   string `json:"secret,omitempty"`
 	Enabled  bool   `json:"enabled"`
+	// Template fields. Absent keeps the stored value on update; "" clears it.
+	Format          *string `json:"format,omitempty"`
+	TitleTemplate   *string `json:"title_template,omitempty"`
+	ContentTemplate *string `json:"content_template,omitempty"`
+}
+
+func (req channelReq) toInput() svc.ChannelInput {
+	return svc.ChannelInput{
+		Name:            req.Name,
+		Type:            req.Type,
+		Endpoint:        req.Endpoint,
+		Secret:          req.Secret,
+		Enabled:         req.Enabled,
+		Format:          req.Format,
+		TitleTemplate:   req.TitleTemplate,
+		ContentTemplate: req.ContentTemplate,
+	}
+}
+
+type channelTemplateReq struct {
+	Type            string `json:"type"`
+	Format          string `json:"format,omitempty"`
+	TitleTemplate   string `json:"title_template,omitempty"`
+	ContentTemplate string `json:"content_template,omitempty"`
 }
 
 type errorBody struct {
@@ -599,13 +627,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errors.Join(errs.ErrInvalid, err))
 		return
 	}
-	item, err := h.channels.CreateChannel(r.Context(), caller, svc.ChannelInput{
-		Name:     req.Name,
-		Type:     req.Type,
-		Endpoint: req.Endpoint,
-		Secret:   req.Secret,
-		Enabled:  req.Enabled,
-	})
+	item, err := h.channels.CreateChannel(r.Context(), caller, req.toInput())
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -616,7 +638,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 		ResourceID:   strconv.FormatUint(item.ID, 10),
 		ResourceName: item.Name,
 		Status:       auditmodel.StatusSuccess,
-		Payload:      map[string]any{"type": req.Type, "enabled": req.Enabled},
+		Payload:      map[string]any{"type": req.Type, "enabled": req.Enabled, "templated": item.Format != "" || item.TitleTemplate != "" || item.ContentTemplate != ""},
 	})
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -636,13 +658,7 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errors.Join(errs.ErrInvalid, err))
 		return
 	}
-	item, err := h.channels.UpdateChannel(r.Context(), caller, id, svc.ChannelInput{
-		Name:     req.Name,
-		Type:     req.Type,
-		Endpoint: req.Endpoint,
-		Secret:   req.Secret,
-		Enabled:  req.Enabled,
-	})
+	item, err := h.channels.UpdateChannel(r.Context(), caller, id, req.toInput())
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -691,6 +707,51 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.channels.TestChannel(r.Context(), caller, id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// previewChannelTemplate handles POST /v1/notification-channels/preview
+// (admin): render a notification template against a sample alert. Body
+// {type, format?, title_template?, content_template?}; 200
+// {title, content?, format, default_layout}; 400 when the template is
+// invalid. Nothing is saved or sent.
+func (h *Handler) previewChannelTemplate(w http.ResponseWriter, r *http.Request) {
+	caller, ok := requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req channelTemplateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, errors.Join(errs.ErrInvalid, err))
+		return
+	}
+	out, err := h.channels.PreviewChannelTemplate(r.Context(), caller, svc.ChannelTemplateInput{
+		Type:            req.Type,
+		Format:          req.Format,
+		TitleTemplate:   req.TitleTemplate,
+		ContentTemplate: req.ContentTemplate,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// channelTemplateStarter handles GET
+// /v1/notification-channels/template-starter?type=&format= (authenticated):
+// an editable example content template in the caller's language.
+func (h *Handler) channelTemplateStarter(w http.ResponseWriter, r *http.Request) {
+	caller, ok := callerFromRequest(r)
+	if !ok {
+		writeErr(w, errs.ErrUnauthorized)
+		return
+	}
+	out, err := h.channels.ChannelTemplateStarter(r.Context(), caller, r.URL.Query().Get("type"), r.URL.Query().Get("format"))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -889,7 +950,7 @@ func callerFromRequest(r *http.Request) (svc.Caller, bool) {
 	if !ok {
 		return svc.Caller{}, false
 	}
-	return svc.Caller{UserID: tenant.UserID, Role: tenant.Role}, true
+	return svc.Caller{UserID: tenant.UserID, Role: tenant.Role, Locale: localeFromRequest(r)}, true
 }
 
 func requireAdmin(w http.ResponseWriter, r *http.Request) (svc.Caller, bool) {

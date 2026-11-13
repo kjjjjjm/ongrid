@@ -8,6 +8,10 @@ import (
 	model "github.com/ongridio/ongrid/internal/manager/model/alert"
 )
 
+// retryChannelConfig gives the fixture channel a destination: retries build
+// their sender from the channel row, like the first attempt.
+const retryChannelConfig = `{"endpoint":"https://hooks.example.test/ongrid"}`
+
 func TestRetryWorkerSucceedsOnRecover(t *testing.T) {
 	repo := newFakeRepo()
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
@@ -29,7 +33,7 @@ func TestRetryWorkerSucceedsOnRecover(t *testing.T) {
 	if err := repo.CreateIncident(context.Background(), incident); err != nil {
 		t.Fatalf("seed incident: %v", err)
 	}
-	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true}
+	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true, ConfigJSON: retryChannelConfig}
 	finished := now.Add(-5 * time.Minute)
 	failedAt := now.Add(-5 * time.Minute)
 	repo.deliveries = append(repo.deliveries, &model.Delivery{
@@ -82,7 +86,7 @@ func TestRetryWorkerHonorsBackoff(t *testing.T) {
 		DedupeKey: "host:7:cpu_high",
 	}
 	_ = repo.CreateIncident(context.Background(), incident)
-	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true}
+	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true, ConfigJSON: retryChannelConfig}
 	finished := now.Add(-30 * time.Second)
 	failedAt := now.Add(-30 * time.Second)
 	repo.deliveries = append(repo.deliveries, &model.Delivery{
@@ -125,7 +129,7 @@ func TestRetryWorkerStopsAtMaxAttempts(t *testing.T) {
 		DedupeKey: "host:7:cpu_high",
 	}
 	_ = repo.CreateIncident(context.Background(), incident)
-	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", Enabled: true}
+	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true, ConfigJSON: retryChannelConfig}
 	finished := now.Add(-time.Hour)
 	repo.deliveries = append(repo.deliveries, &model.Delivery{
 		ID:           1,
@@ -167,7 +171,7 @@ func TestRetryWorkerSkipsResolvedIncident(t *testing.T) {
 		ResolvedAt: &resolved,
 	}
 	_ = repo.CreateIncident(context.Background(), incident)
-	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", Enabled: true}
+	repo.channels["log"] = &model.Channel{ID: 7, Name: "log", ChannelType: model.ChannelTypeWebhook, Enabled: true, ConfigJSON: retryChannelConfig}
 	finished := now.Add(-5 * time.Minute)
 	repo.deliveries = append(repo.deliveries, &model.Delivery{
 		ID:           1,

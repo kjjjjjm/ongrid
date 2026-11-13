@@ -7,6 +7,7 @@ package alert
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -22,6 +23,9 @@ import (
 type Caller struct {
 	UserID uint64
 	Role   string
+	// Locale is the console language ("en" / "zh", "" when unknown). It only
+	// picks the language of template samples and starters.
+	Locale string
 }
 
 type IncidentFilter struct {
@@ -86,13 +90,18 @@ type Event struct {
 }
 
 type Channel struct {
-	ID             uint64    `json:"id"`
-	Name           string    `json:"name"`
-	Type           string    `json:"type"`
-	Enabled        bool      `json:"enabled"`
-	EndpointMasked string    `json:"endpoint,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uint64 `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Enabled        bool   `json:"enabled"`
+	EndpointMasked string `json:"endpoint,omitempty"`
+	// Notification template; all empty = built-in format. See
+	// docs/guides/alert-notification-templates.md.
+	Format          string    `json:"format,omitempty"`
+	TitleTemplate   string    `json:"title_template,omitempty"`
+	ContentTemplate string    `json:"content_template,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ChannelInput struct {
@@ -101,11 +110,40 @@ type ChannelInput struct {
 	Endpoint string
 	Secret   string
 	Enabled  bool
+	// Template fields: nil keeps the stored value on update (and means none
+	// on create), so clients unaware of templates do not wipe them.
+	Format          *string
+	TitleTemplate   *string
+	ContentTemplate *string
 }
 
 type ChannelTestResult struct {
 	Accepted bool   `json:"accepted"`
 	Message  string `json:"message,omitempty"`
+}
+
+// ChannelTemplateInput is a template to preview against sample alert data.
+type ChannelTemplateInput struct {
+	Type            string
+	Format          string
+	TitleTemplate   string
+	ContentTemplate string
+}
+
+// ChannelTemplatePreview is a template rendered against sample alert data.
+type ChannelTemplatePreview struct {
+	Title   string `json:"title"`
+	Content string `json:"content,omitempty"`
+	Format  string `json:"format"`
+	// DefaultLayout is true when the channel would send its built-in layout
+	// (no content template, text format). Content then shows that layout for
+	// the text bots, and is empty for Slack and webhook channels.
+	DefaultLayout bool `json:"default_layout"`
+}
+
+// ChannelTemplateStarter is an editable example template.
+type ChannelTemplateStarter struct {
+	ContentTemplate string `json:"content_template"`
 }
 
 // RuleCondition mirrors model.RuleCondition for transport.
@@ -436,15 +474,21 @@ func (s *Service) CreateChannel(ctx context.Context, caller Caller, in ChannelIn
 	if err := validateChannelInput(in, true); err != nil {
 		return nil, err
 	}
+	channelType := strings.TrimSpace(in.Type)
+	tf, err := s.resolveTemplate(channelType, channelTemplate{}, in)
+	if err != nil {
+		return nil, err
+	}
 	if s.repo == nil {
 		return nil, errs.ErrNotWiredYet
 	}
 	row := &model.Channel{
 		Name:        strings.TrimSpace(in.Name),
-		ChannelType: strings.TrimSpace(in.Type),
+		ChannelType: channelType,
 		Enabled:     in.Enabled,
 		ConfigJSON:  encodeChannelConfig(in.Endpoint, in.Secret),
 	}
+	tf.applyTo(row)
 	if caller.UserID != 0 {
 		uid := caller.UserID
 		row.CreatedBy = &uid
@@ -480,6 +524,11 @@ func (s *Service) UpdateChannel(ctx context.Context, _ Caller, id uint64, in Cha
 	}
 	merged.Enabled = in.Enabled
 	merged.ConfigJSON = mergeChannelConfig(existing.ConfigJSON, in.Endpoint, in.Secret)
+	tf, err := s.resolveTemplate(merged.ChannelType, templateOf(existing), in)
+	if err != nil {
+		return nil, err
+	}
+	tf.applyTo(&merged)
 	if err := s.repo.UpdateChannel(ctx, id, &merged); err != nil {
 		return nil, err
 	}
@@ -514,7 +563,7 @@ func (s *Service) DeleteChannel(ctx context.Context, _ Caller, id uint64) error 
 // the notify router using the channel's name. Accepted=true means the router
 // returned no error; accepted=false carries the error message verbatim so the
 // UI can show the operator the actual upstream failure.
-func (s *Service) TestChannel(ctx context.Context, _ Caller, id uint64) (*ChannelTestResult, error) {
+func (s *Service) TestChannel(ctx context.Context, caller Caller, id uint64) (*ChannelTestResult, error) {
 	if id == 0 {
 		return nil, fmt.Errorf("%w: channel id required", errs.ErrInvalid)
 	}
@@ -532,6 +581,19 @@ func (s *Service) TestChannel(ctx context.Context, _ Caller, id uint64) (*Channe
 		Source:     "channel_test",
 		DedupeKey:  fmt.Sprintf("channel-test-%d", channel.ID),
 		OccurredAt: time.Now().UTC(),
+	}
+	if channel.HasTemplate() {
+		// Send a sample alert through the template so the operator sees the
+		// real layout. Unlike live alerts, a broken template fails the test
+		// instead of falling back to the default format.
+		rendered, err := s.renderSample(channel.ChannelType, channel.MessageFormat,
+			channel.TitleTemplateText(), channel.ContentTemplateText(), caller.Locale)
+		if err != nil {
+			return &ChannelTestResult{Accepted: false, Message: err.Error()}, nil
+		}
+		rendered.DedupeKey = msg.DedupeKey
+		rendered.Source = msg.Source
+		msg = rendered
 	}
 	// Build the typed sender from the channel's ChannelType + ConfigJSON and
 	// send DIRECTLY — a manual test must attempt real delivery regardless of
@@ -553,6 +615,125 @@ func (s *Service) TestChannel(ctx context.Context, _ Caller, id uint64) (*Channe
 		out.Message = fmt.Sprintf("已投递到 %s", channel.Name)
 	}
 	return out, nil
+}
+
+// PreviewChannelTemplate renders a template against a sample alert without
+// saving or sending anything.
+func (s *Service) PreviewChannelTemplate(_ context.Context, caller Caller, in ChannelTemplateInput) (*ChannelTemplatePreview, error) {
+	channelType := strings.TrimSpace(in.Type)
+	if !knownChannelType(channelType) {
+		return nil, fmt.Errorf("%w: unknown channel type %q", errs.ErrInvalid, in.Type)
+	}
+	msg, err := s.renderSample(channelType, in.Format, in.TitleTemplate, in.ContentTemplate, caller.Locale)
+	if err != nil {
+		return nil, err
+	}
+	out := &ChannelTemplatePreview{Title: msg.Subject, Format: string(notify.FormatText)}
+	if msg.Rendered != nil {
+		out.Content = msg.Rendered.Content
+		out.Format = string(msg.Rendered.Format)
+		return out, nil
+	}
+	out.DefaultLayout = true
+	if channelType != model.ChannelTypeSlack && channelType != model.ChannelTypeWebhook {
+		out.Content = notify.PlainText(msg)
+	}
+	return out, nil
+}
+
+// ChannelTemplateStarter returns an editable example template for a channel
+// type and format, in the caller's console language.
+func (s *Service) ChannelTemplateStarter(_ context.Context, caller Caller, channelType, format string) (*ChannelTemplateStarter, error) {
+	channelType = strings.TrimSpace(channelType)
+	if !knownChannelType(channelType) {
+		return nil, fmt.Errorf("%w: unknown channel type %q", errs.ErrInvalid, channelType)
+	}
+	if _, err := bizalert.NormalizeMessageFormat(channelType, format); err != nil {
+		return nil, err
+	}
+	return &ChannelTemplateStarter{ContentTemplate: bizalert.StarterTemplate(channelType, format, caller.Locale)}, nil
+}
+
+// renderSample renders a template against the sample alert. Errors carry
+// errs.ErrInvalid: they describe the template, not the server.
+func (s *Service) renderSample(channelType, format, title, content, locale string) (notify.Message, error) {
+	tmpl, err := bizalert.ParseChannelTemplate(channelType, format, title, content)
+	if err != nil {
+		return notify.Message{}, err
+	}
+	data := bizalert.SampleTemplateData(locale, s.publicURL(), time.Now().UTC())
+	msg, err := tmpl.Render(bizalert.SampleMessage(data), data)
+	if err != nil {
+		return notify.Message{}, fmt.Errorf("%w: %w", errs.ErrInvalid, err)
+	}
+	return msg, nil
+}
+
+func (s *Service) publicURL() string {
+	if s.uc == nil {
+		return ""
+	}
+	return s.uc.PublicURL()
+}
+
+// channelTemplate is the stored template configuration of a channel.
+type channelTemplate struct {
+	format, title, content string
+}
+
+func templateOf(ch *model.Channel) channelTemplate {
+	return channelTemplate{format: ch.MessageFormat, title: ch.TitleTemplateText(), content: ch.ContentTemplateText()}
+}
+
+func (t channelTemplate) applyTo(ch *model.Channel) {
+	ch.MessageFormat = t.format
+	ch.TitleTemplate = optionalText(t.title)
+	ch.ContentTemplate = optionalText(t.content)
+}
+
+// resolveTemplate applies the template fields of in over cur and validates
+// the result: it must parse, and render against the sample alert, so typos
+// such as an unknown field fail on save instead of on the next alert. A
+// template that renders nothing for the sample alert is accepted (it may
+// only produce output for other severities); live alerts then fall back to
+// the default format.
+func (s *Service) resolveTemplate(channelType string, cur channelTemplate, in ChannelInput) (channelTemplate, error) {
+	next := cur
+	if in.Format != nil {
+		next.format = *in.Format
+	}
+	if in.TitleTemplate != nil {
+		next.title = *in.TitleTemplate
+	}
+	if in.ContentTemplate != nil {
+		next.content = *in.ContentTemplate
+	}
+	format, err := bizalert.NormalizeMessageFormat(channelType, next.format)
+	if err != nil {
+		return cur, err
+	}
+	next.format = format
+	if _, err := s.renderSample(channelType, next.format, next.title, next.content, ""); err != nil &&
+		!errors.Is(err, bizalert.ErrTemplateRenderedEmpty) {
+		return cur, err
+	}
+	return next, nil
+}
+
+func optionalText(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return &s
+}
+
+func knownChannelType(t string) bool {
+	switch t {
+	case model.ChannelTypeWebhook, model.ChannelTypeSlack, model.ChannelTypeFeishu,
+		model.ChannelTypeDingTalk, model.ChannelTypeWeCom, model.ChannelTypeTelegram:
+		return true
+	}
+	return false
 }
 
 // ListRules returns the rule set, optionally filtered by scope.
@@ -819,12 +1000,15 @@ func toServiceChannel(r *model.Channel) *Channel {
 		return nil
 	}
 	out := &Channel{
-		ID:        r.ID,
-		Name:      r.Name,
-		Type:      r.ChannelType,
-		Enabled:   r.Enabled,
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		ID:              r.ID,
+		Name:            r.Name,
+		Type:            r.ChannelType,
+		Enabled:         r.Enabled,
+		Format:          r.MessageFormat,
+		TitleTemplate:   r.TitleTemplateText(),
+		ContentTemplate: r.ContentTemplateText(),
+		CreatedAt:       r.CreatedAt,
+		UpdatedAt:       r.UpdatedAt,
 	}
 	if r.ConfigJSON != "" {
 		var cfg map[string]any
@@ -840,6 +1024,17 @@ func toServiceChannel(r *model.Channel) *Channel {
 		}
 	}
 	return out
+}
+
+// storedEndpoint returns the destination URL of a decoded config_json, using
+// the same key order toServiceChannel masks.
+func storedEndpoint(cfg map[string]any) string {
+	for _, k := range []string{"endpoint", "url", "webhook_url"} {
+		if s, ok := cfg[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // maskEndpoint trims the endpoint to its first 50 characters and appends an
@@ -884,10 +1079,16 @@ func mergeChannelConfig(existing, endpoint, secret string) string {
 	if existing != "" {
 		_ = json.Unmarshal([]byte(existing), &cfg)
 	}
-	if e := strings.TrimSpace(endpoint); e != "" {
-		cfg["endpoint"] = e
-	} else {
+	e := strings.TrimSpace(endpoint)
+	switch stored := storedEndpoint(cfg); {
+	case e == "":
 		delete(cfg, "endpoint")
+	case stored != "" && e != stored && maskEndpoint(stored) == e:
+		// The edit form shows the masked endpoint (toServiceChannel). Saving
+		// it back unchanged keeps the stored URL; storing the truncated one
+		// would break the channel.
+	default:
+		cfg["endpoint"] = e
 	}
 	switch strings.TrimSpace(secret) {
 	case "":

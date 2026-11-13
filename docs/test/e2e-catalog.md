@@ -106,6 +106,7 @@
 | G5 | Telegram chatID 在 secret | G2 测 telegram | sendMessage 带 chat_id | P1 | |
 | G6 | WeCom 凭证在 URL | G2 测 wecom | URL 含 key,不发 secret 头 | P2 | |
 | G7 | delivery retry worker | mock channel 返 500 | 5 次指数退避后 status=failed | P1 | |
+| G8 | 渠道消息模板 | PUT channel 带 format / title_template / content_template，再 G2 测 | 测试消息按模板渲染（Markdown 走平台 markdown / 卡片）；模板错误保存返回 400；发送时渲染失败改发默认格式并记入事件 | P1 | 单测 `internal/manager/biz/alert/notify_template_test.go`、`internal/manager/service/alert/channel_template_test.go` |
 
 ## 域 H — Channels(双向 IM bot)
 

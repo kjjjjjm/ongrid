@@ -742,6 +742,9 @@ func (r *Repo) UpdateChannel(ctx context.Context, id uint64, in *model.Channel) 
 		"config_json":        in.ConfigJSON,
 		"match_severity_min": in.MatchSeverityMin,
 		"match_scope_types":  in.MatchScopeTypes,
+		"title_template":     in.TitleTemplate,
+		"content_template":   in.ContentTemplate,
+		"message_format":     in.MessageFormat,
 	}
 	res := r.db.WithContext(ctx).Model(&model.Channel{}).Where("id = ?", id).Updates(updates)
 	if res.Error != nil {

@@ -117,13 +117,14 @@ func runWorkers(rootCtx context.Context, cfg *config.Config, log *slog.Logger, n
 		// Delivery retry worker drains failed notification_deliveries with
 		// linear backoff (delivery_tracking).
 		retryWorker := managerbizalert.NewRetryWorker(managerbizalert.RetryWorkerOpts{
-			Repo:        alerts.alertRepo,
-			Notifier:    notifyRouter,
-			Resolver:    alerts.alertResolver,
-			Usecase:     alerts.alertUC,
-			MaxAttempts: 5,
-			Tick:        cfg.Alert.EvaluatorInterval,
-			Log:         log.With(slog.String("comp", "alert-retry")),
+			Repo:                   alerts.alertRepo,
+			Notifier:               notifyRouter,
+			Resolver:               alerts.alertResolver,
+			Usecase:                alerts.alertUC,
+			MaxAttempts:            5,
+			Tick:                   cfg.Alert.EvaluatorInterval,
+			Log:                    log.With(slog.String("comp", "alert-retry")),
+			DeviceIdentityResolver: managersvcalert.DeviceIdentityResolver(devices.deviceUC),
 		})
 		eg.Go(func() error { return retryWorker.Loop(egCtx) })
 	}

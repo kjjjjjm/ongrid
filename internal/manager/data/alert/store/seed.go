@@ -76,12 +76,17 @@ type seedCandidate struct {
 	Secret  string
 }
 
+// encodeChannelConfig matches the service-layer encoding of UI-created
+// channels. The secret must be stored: every send (first attempt and retry)
+// builds its sender from this row, so a missing secret meant unsigned
+// Feishu / DingTalk requests for env-configured channels.
 func encodeChannelConfig(url, secret string) string {
 	out := map[string]string{}
 	if url != "" {
 		out["endpoint"] = url
 	}
 	if secret != "" {
+		out["secret"] = secret
 		out["secret_set"] = "true"
 	}
 	if len(out) == 0 {

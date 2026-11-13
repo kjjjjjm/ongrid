@@ -81,6 +81,11 @@ type fakeService struct {
 	lastIncidentNote string
 	lastChannelID    uint64
 	lastChannelInput svc.ChannelInput
+
+	previewResp       *svc.ChannelTemplatePreview
+	previewErr        error
+	lastTemplateInput svc.ChannelTemplateInput
+	lastStarterQuery  [2]string
 	lastPage         int
 	lastPageSize     int
 }
@@ -214,6 +219,18 @@ func (f *fakeService) TestChannel(_ context.Context, caller svc.Caller, id uint6
 	f.lastCaller = caller
 	f.lastChannelID = id
 	return f.testChannelResp, f.testChannelErr
+}
+
+func (f *fakeService) PreviewChannelTemplate(_ context.Context, caller svc.Caller, in svc.ChannelTemplateInput) (*svc.ChannelTemplatePreview, error) {
+	f.lastCaller = caller
+	f.lastTemplateInput = in
+	return f.previewResp, f.previewErr
+}
+
+func (f *fakeService) ChannelTemplateStarter(_ context.Context, caller svc.Caller, channelType, format string) (*svc.ChannelTemplateStarter, error) {
+	f.lastCaller = caller
+	f.lastStarterQuery = [2]string{channelType, format}
+	return &svc.ChannelTemplateStarter{ContentTemplate: "starter for " + channelType + "/" + format}, nil
 }
 
 func buildRouter(h *Handler, tenant *tenantctx.Tenant) http.Handler {
@@ -452,5 +469,92 @@ func TestListChannelsRequiresAuth(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// Template fields distinguish "absent" (keep) from "" (clear): a client that
+// does not know about templates must not wipe them on update.
+func TestUpdateChannelTemplateFieldsKeepAbsentApart(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeService{updateChannelResp: &svc.Channel{ID: 5, Name: "ops"}}
+	router := buildRouter(NewHandler(f, f, f), &tenantctx.Tenant{UserID: 9, Role: "admin"})
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/notification-channels/5",
+		strings.NewReader(`{"name":"ops","endpoint":"https://x","enabled":true,"title_template":""}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	in := f.lastChannelInput
+	if in.TitleTemplate == nil || *in.TitleTemplate != "" {
+		t.Fatalf("title_template = %v, want an explicit empty string", in.TitleTemplate)
+	}
+	if in.ContentTemplate != nil || in.Format != nil {
+		t.Fatalf("absent fields decoded as set: content=%v format=%v", in.ContentTemplate, in.Format)
+	}
+}
+
+func TestPreviewChannelTemplateIsAdminOnly(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeService{}
+	router := buildRouter(NewHandler(f, f, f), &tenantctx.Tenant{UserID: 9, Role: "user"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/notification-channels/preview", strings.NewReader(`{"type":"wecom"}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+}
+
+func TestPreviewChannelTemplatePassesTemplateAndLocale(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeService{previewResp: &svc.ChannelTemplatePreview{Title: "t", Content: "c", Format: "markdown"}}
+	router := buildRouter(NewHandler(f, f, f), &tenantctx.Tenant{UserID: 9, Role: "admin"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/notification-channels/preview",
+		strings.NewReader(`{"type":"wecom","format":"markdown","title_template":"T","content_template":"C"}`))
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"content":"c"`) {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	want := svc.ChannelTemplateInput{Type: "wecom", Format: "markdown", TitleTemplate: "T", ContentTemplate: "C"}
+	if f.lastTemplateInput != want || f.lastCaller.Locale != "en" {
+		t.Fatalf("input = %+v, locale = %q", f.lastTemplateInput, f.lastCaller.Locale)
+	}
+}
+
+func TestPreviewChannelTemplateInvalidTemplateIs400(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeService{previewErr: errs.ErrInvalid}
+	router := buildRouter(NewHandler(f, f, f), &tenantctx.Tenant{UserID: 9, Role: "admin"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/notification-channels/preview", strings.NewReader(`{"type":"wecom","content_template":"{{"}`))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// The static template-starter path must not be captured by /{id}.
+func TestChannelTemplateStarterRoute(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeService{}
+	router := buildRouter(NewHandler(f, f, f), &tenantctx.Tenant{UserID: 9, Role: "user"})
+	req := httptest.NewRequest(http.MethodGet, "/v1/notification-channels/template-starter?type=dingtalk&format=markdown", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "starter for dingtalk/markdown") {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if f.lastStarterQuery != [2]string{"dingtalk", "markdown"} {
+		t.Fatalf("query = %v", f.lastStarterQuery)
 	}
 }

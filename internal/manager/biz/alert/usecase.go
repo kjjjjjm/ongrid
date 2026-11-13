@@ -88,6 +88,9 @@ type Usecase struct {
 	// dispatcher so a fired alert can auto-start matching workflows.
 	workflowDispatcher WorkflowDispatcher
 	ruleCacheRefresher RuleCacheRefresher
+	// publicURL is the console base URL behind {{.IncidentURL}} in
+	// notification templates. Set once at boot; empty leaves it blank.
+	publicURL string
 }
 
 const maxSilenceNameRunes = 256
@@ -117,6 +120,15 @@ func (u *Usecase) SetWorkflowDispatcher(d WorkflowDispatcher) {
 func (u *Usecase) SetRuleCacheRefresher(refresher RuleCacheRefresher) {
 	u.ruleCacheRefresher = refresher
 }
+
+// SetPublicURL sets the console base URL (ONGRID_PUBLIC_URL) that notification
+// templates use for {{.IncidentURL}}. Call it before the evaluator starts.
+func (u *Usecase) SetPublicURL(publicURL string) {
+	u.publicURL = strings.TrimSpace(publicURL)
+}
+
+// PublicURL returns the console base URL set by SetPublicURL.
+func (u *Usecase) PublicURL() string { return u.publicURL }
 
 // createEvent persists an alert event row and increments the
 // alert_events_total counter. Centralised here so every CreateEvent call
@@ -1418,6 +1430,20 @@ func (u *Usecase) MaybeNotify(ctx context.Context, res *FiringResult, msg notify
 		return
 	}
 
+	// Templates read the incident's value and event count. On a re-firing
+	// res.Incident still holds the previous values (the repo updated the
+	// row), so re-read it once, and only when a channel has a template.
+	var templateIncident *model.Incident
+	incidentForTemplate := func() *model.Incident {
+		if templateIncident == nil {
+			templateIncident = res.Incident
+			if row, err := u.repo.GetIncidentByID(ctx, res.Incident.ID); err == nil && row != nil {
+				templateIncident = row
+			}
+		}
+		return templateIncident
+	}
+
 	anySuccess := false
 	for _, ch := range channels {
 		if ch == nil || ch.Name == "" {
@@ -1450,17 +1476,27 @@ func (u *Usecase) MaybeNotify(ctx context.Context, res *FiringResult, msg notify
 			deliveryID = id
 		}
 
-		var sendErr error
+		var sendErr, templateErr error
 		if ch.ID > 0 {
 			// Persisted channel: build the typed sender from its
 			// ChannelType + ConfigJSON, then deliver through the Notifier
 			// seam (SendVia) so router gating/timeout — and test stubs —
 			// still apply. (Synthetic rows, ID==0, bridge to the
 			// env-config notifier by name in the else branch.)
+			chMsg := msg
+			if ch.HasTemplate() {
+				chMsg, templateErr = renderChannelMessage(ch, msg, incidentForTemplate(), u.publicURL)
+				if templateErr != nil {
+					u.log.Warn("alert: notification template failed; sending the default format",
+						slog.String("channel", ch.Name),
+						slog.Uint64("incident_id", res.Incident.ID),
+						slog.Any("err", templateErr))
+				}
+			}
 			if sender, berr := BuildSenderFromChannel(ch); berr != nil {
 				sendErr = berr
 			} else {
-				sendErr = opts.Notifier.SendVia(ctx, msg, sender)
+				sendErr = opts.Notifier.SendVia(ctx, chMsg, sender)
 			}
 		} else {
 			sendErr = opts.Notifier.Send(ctx, msg, ch.Name)
@@ -1475,7 +1511,7 @@ func (u *Usecase) MaybeNotify(ctx context.Context, res *FiringResult, msg notify
 			)
 		}
 		if deliveryID > 0 {
-			if err := u.FinishDelivery(ctx, deliveryID, res.Incident.ID, ch.Name, sendErr, occurredAt); err != nil {
+			if err := u.FinishDelivery(ctx, deliveryID, res.Incident.ID, deliveryLabel(ch.Name, templateErr), sendErr, occurredAt); err != nil {
 				u.log.Warn("alert: finish delivery failed",
 					slog.Uint64("delivery_id", deliveryID),
 					slog.Any("err", err),
@@ -1489,6 +1525,16 @@ func (u *Usecase) MaybeNotify(ctx context.Context, res *FiringResult, msg notify
 			u.log.Warn("alert: mark notified failed", slog.Any("err", err))
 		}
 	}
+}
+
+// deliveryLabel names the channel in a delivery event. A template failure
+// does not fail the delivery (the default format was sent), but the timeline
+// says so, since operators look there rather than in the manager log.
+func deliveryLabel(channelName string, templateErr error) string {
+	if templateErr == nil {
+		return channelName
+	}
+	return fmt.Sprintf("%s (template failed, sent the default format: %v)", channelName, templateErr)
 }
 
 // lookupRuleForIncident loads the rule that produced an incident, by

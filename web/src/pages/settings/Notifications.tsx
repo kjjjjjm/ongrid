@@ -1,9 +1,12 @@
-import { Input, Label } from '@/components/ui';
+import { Input, Label, Textarea } from '@/components/ui';
 import { Hint } from '@/components/ui/Tooltip';
 import { Checkbox } from '@/components/ui/Checkbox';
+import { Select } from '@/components/ui/Select';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
+  ChevronDown,
+  ChevronRight,
   Loader2,
   Webhook,
   Plus,
@@ -17,11 +20,15 @@ import { cn } from '@/lib/cn';
 import {
   createChannel,
   deleteChannel,
+  getChannelTemplateStarter,
   listChannels,
+  previewChannelTemplate,
   testChannel,
   updateChannel,
   type Channel,
   type ChannelInput,
+  type ChannelMessageFormat,
+  type ChannelTemplatePreview,
   type ChannelTestResult,
 } from '@/api/alerts';
 import { ApiError } from '@/api/client';
@@ -115,6 +122,13 @@ const GROUP_RANK: Record<string, Record<TypeMeta['group'], number>> = {
 function orderCardsByLocale(locale: string): TypeMeta[] {
   const rank = GROUP_RANK[locale] ?? GROUP_RANK['zh-CN'];
   return [...TYPE_CARDS].sort((a, b) => rank[a.group] - rank[b.group]);
+}
+
+// IM bots with both a text and a Markdown message type.
+const MARKDOWN_TYPES: ReadonlySet<string> = new Set(['wecom', 'dingtalk', 'feishu']);
+
+function hasTemplate(ch: Channel): boolean {
+  return Boolean(ch.format || ch.title_template || ch.content_template);
 }
 
 function ChannelTypeIcon({ type, size }: { type: ChannelType; size: number }) {
@@ -371,6 +385,11 @@ function TypeCard({
                   <Chip tone={ch.enabled ? 'success' : 'default'}>
                     {ch.enabled ? tr('已启用', 'Enabled') : tr('已停用', 'Disabled')}
                   </Chip>
+                  {hasTemplate(ch) && (
+                    <Chip tone="info">
+                      {ch.format === 'markdown' ? tr('自定义模板 · Markdown', 'Custom template · Markdown') : tr('自定义模板', 'Custom template')}
+                    </Chip>
+                  )}
                 </div>
                 {ch.endpoint && (
                   <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">
@@ -439,6 +458,9 @@ function ChannelEditorModal({
     endpoint: channel?.endpoint ?? '',
     secret: '',
     enabled: channel?.enabled ?? true,
+    format: channel?.format ?? '',
+    title_template: channel?.title_template ?? '',
+    content_template: channel?.content_template ?? '',
   }));
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -469,9 +491,17 @@ function ChannelEditorModal({
     }
     setSubmitting(true);
     setErr(null);
+    // Always send the template fields so clearing them in the form clears
+    // them on the server; markdown only applies to the bots that have it.
+    const payload: ChannelInput = {
+      ...form,
+      format: MARKDOWN_TYPES.has(form.type) ? form.format ?? '' : '',
+      title_template: form.title_template ?? '',
+      content_template: form.content_template ?? '',
+    };
     try {
-      if (mode === 'create') await createChannel(form);
-      else if (channel) await updateChannel(channel.id, form);
+      if (mode === 'create') await createChannel(payload);
+      else if (channel) await updateChannel(channel.id, payload);
       onSaved();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : (e as Error).message);
@@ -484,7 +514,7 @@ function ChannelEditorModal({
     <Modal
       open
       onClose={onClose}
-      size="md"
+      size="lg"
       title={mode === 'create' ? tr(`新建 ${typeLabel} 渠道`, `New ${typeLabel} channel`) : tr(`编辑：${channel?.name}`, `Edit: ${channel?.name}`)}
       footer={
         <>
@@ -524,8 +554,8 @@ function ChannelEditorModal({
           {endpointTruncated && (
             <div className="mt-1 text-[11px] text-amber-400">
               {tr(
-                '当前显示的 endpoint 是脱敏值（结尾有省略号）。如果不修改，请清空后重新粘贴完整地址再保存。',
-                'The endpoint shown is masked (ends with ellipsis). To keep it as-is, leave the field; to change it, clear and paste the full URL before saving.',
+                '当前显示的 endpoint 是脱敏值（结尾有省略号）。保持不变即保留原地址；要更换时清空后粘贴完整地址。',
+                'The endpoint shown is masked (ends with an ellipsis). Leave it unchanged to keep the stored URL; to change it, clear the field and paste the full URL.',
               )}
             </div>
           )}
@@ -565,17 +595,207 @@ function ChannelEditorModal({
           />
           {tr('启用此渠道', 'Enable this channel')}
         </Label>
+        <TemplateEditor
+          type={form.type}
+          format={form.format ?? ''}
+          titleTemplate={form.title_template ?? ''}
+          contentTemplate={form.content_template ?? ''}
+          defaultOpen={channel ? hasTemplate(channel) : false}
+          onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
+        />
         {err && <div className="text-xs text-red-400">{err}</div>}
       </div>
     </Modal>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+const TEMPLATE_VARIABLES = [
+  '.Title', '.Severity', '.Status', '.RuleName', '.RuleKey', '.Value', '.Threshold', '.DeviceName', '.DeviceIP',
+  '.Labels.<name>', '.Annotations.<name>', '.Source', '.EventCount', '.FiredAt', '.OccurredAt', '.IncidentURL', '.RunbookURL',
+];
+const TEMPLATE_FUNCTIONS = ['upper', 'lower', 'trim', 'replace', 'contains', 'truncate', 'default', 'json', 'date', 'dateInZone'];
+
+// TemplateEditor edits the optional notification template of one channel
+// (Go text/template). Empty fields keep the platform's built-in format; the
+// preview renders a sample alert on the server without sending anything.
+function TemplateEditor({
+  type,
+  format,
+  titleTemplate,
+  contentTemplate,
+  defaultOpen,
+  onChange,
+}: {
+  type: string;
+  format: ChannelMessageFormat;
+  titleTemplate: string;
+  contentTemplate: string;
+  defaultOpen: boolean;
+  onChange(patch: Partial<ChannelInput>): void;
+}) {
+  const { tr } = useI18n();
+  const [open, setOpen] = useState(defaultOpen);
+  const [preview, setPreview] = useState<ChannelTemplatePreview | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'starter' | null>(null);
+  const markdownCapable = MARKDOWN_TYPES.has(type);
+  const effectiveFormat: ChannelMessageFormat = markdownCapable ? format : '';
+  const isWebhook = type === 'webhook';
+
+  const update = (patch: Partial<ChannelInput>) => {
+    setPreview(null);
+    setPreviewErr(null);
+    onChange(patch);
+  };
+
+  const runPreview = async () => {
+    setBusy('preview');
+    setPreviewErr(null);
+    try {
+      setPreview(await previewChannelTemplate({
+        type,
+        format: effectiveFormat,
+        title_template: titleTemplate,
+        content_template: contentTemplate,
+      }));
+    } catch (e) {
+      setPreview(null);
+      setPreviewErr(e instanceof ApiError ? e.message : (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const insertStarter = async () => {
+    setBusy('starter');
+    setPreviewErr(null);
+    try {
+      const starter = await getChannelTemplateStarter(type, effectiveFormat);
+      update({ content_template: starter.content_template });
+    } catch (e) {
+      setPreviewErr(e instanceof ApiError ? e.message : (e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-950/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls="channel-template-editor"
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs text-zinc-300"
+      >
+        {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+        <span className="font-medium">{tr('消息模板（可选）', 'Message template (optional)')}</span>
+        {!open && (titleTemplate || contentTemplate || effectiveFormat) && (
+          <Chip tone="info">{tr('已自定义', 'Customized')}</Chip>
+        )}
+      </button>
+      {open && (
+        <div id="channel-template-editor" className="space-y-3 border-t border-zinc-800 px-3 pb-3 pt-2">
+          <p className="text-[11px] text-zinc-500">
+            {tr(
+              '用 Go 模板语法自定义告警通知的标题和内容，只作用于告警通知；留空使用默认格式。模板渲染失败时会改发默认格式，并在告警事件里注明。',
+              'Customize the title and body of alert notifications with Go template syntax. Only alert notifications use it; empty fields keep the default format. If a template fails at send time, the default format is sent and the alert timeline says so.',
+            )}
+          </p>
+          {markdownCapable && (
+            <Field label={tr('消息格式', 'Message format')}>
+              <Select
+                label={tr('消息格式', 'Message format')}
+                value={effectiveFormat === 'markdown' ? 'markdown' : 'text'}
+                onValueChange={(value) => update({ format: value === 'markdown' ? 'markdown' : '' })}
+                className="w-full"
+              >
+                <option value="text">{tr('文本', 'Text')}</option>
+                <option value="markdown">Markdown</option>
+              </Select>
+            </Field>
+          )}
+          <Field
+            label={tr('标题模板', 'Title template')}
+            hint={tr('单行。用于标题位（钉钉 / 飞书卡片 / Slack 标题）和默认格式的首行；留空沿用默认标题。', 'One line. Used where the platform shows a title (DingTalk, Feishu card, Slack) and as the first line of the default layout; empty keeps the default title.')}
+          >
+            <Input
+              value={titleTemplate}
+              onChange={(e) => update({ title_template: e.target.value })}
+              placeholder="【{{upper .Severity}}】{{.RuleName}}"
+              className="w-full font-mono"
+            />
+          </Field>
+          <Field
+            label={isWebhook ? tr('请求体模板（JSON）', 'Request body template (JSON)') : tr('内容模板', 'Content template')}
+            hint={isWebhook
+              ? tr('整个 POST 请求体，必须渲染成合法 JSON；字符串值请用 {{json .Title}} 转义。', 'The whole POST body; it must render to valid JSON. Quote string values with {{json .Title}}.')
+              : tr('完整的消息正文。', 'The complete message body.')}
+          >
+            <Textarea
+              value={contentTemplate}
+              onChange={(e) => update({ content_template: e.target.value })}
+              rows={8}
+              spellCheck={false}
+              placeholder={isWebhook
+                ? tr('留空发送标准 JSON', 'Empty sends the standard JSON')
+                : effectiveFormat === 'markdown'
+                  ? tr('留空使用内置 Markdown 模板', 'Empty uses the built-in Markdown template')
+                  : tr('留空使用默认格式', 'Empty keeps the default format')}
+              className="w-full font-mono text-xs"
+            />
+          </Field>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={runPreview} disabled={busy !== null}>
+              {busy === 'preview' ? tr('预览中…', 'Rendering…') : tr('预览', 'Preview')}
+            </Button>
+            {!contentTemplate.trim() && (
+              <Button variant="ghost" size="sm" onClick={insertStarter} disabled={busy !== null}>
+                {busy === 'starter' ? tr('加载中…', 'Loading…') : tr('填入示例模板', 'Insert example template')}
+              </Button>
+            )}
+          </div>
+          {previewErr && (
+            <div role="alert" className="rounded border border-red-500/40 bg-red-500/5 px-2 py-1 text-[11px] text-red-300">
+              {previewErr}
+            </div>
+          )}
+          {preview && (
+            <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-950 px-3 py-2" aria-label={tr('模板预览', 'Template preview')}>
+              <div className="text-[11px] text-zinc-500">
+                {tr('示例告警渲染结果', 'Rendered with a sample alert')}
+                {preview.default_layout && tr('（未设置内容模板，使用平台默认格式）', ' (no content template: the platform\'s default layout)')}
+              </div>
+              <div className="break-words text-xs font-medium text-zinc-100">{preview.title}</div>
+              {preview.content && (
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-zinc-300">{preview.content}</pre>
+              )}
+            </div>
+          )}
+          <div className="space-y-1 text-[11px] text-zinc-500">
+            <div>
+              {tr('可用变量：', 'Variables: ')}
+              <code className="break-words font-mono text-zinc-400">{TEMPLATE_VARIABLES.join('  ')}</code>
+            </div>
+            <div>
+              {tr('函数：', 'Functions: ')}
+              <code className="break-words font-mono text-zinc-400">{TEMPLATE_FUNCTIONS.join('  ')}</code>
+              {tr('，例如 ', ', e.g. ')}
+              <code className="font-mono text-zinc-400">{'{{date "2006-01-02 15:04:05" .OccurredAt}}'}</code>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <Label className="block">
       <span className="mb-1 block text-xs text-zinc-500">{label}</span>
       {children}
+      {hint && <span className="mt-1 block text-[11px] text-zinc-500">{hint}</span>}
     </Label>
   );
 }
